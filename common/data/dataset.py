@@ -133,6 +133,8 @@ class FeatureDataset(Dataset):
         self.data_dir = data_dir
 
         feature_path = feature_path or os.path.join(data_dir, "X_uni2.npy")
+        if os.path.dirname(feature_path) == "":  # 裸文件名 → 视为相对 data_dir
+            feature_path = os.path.join(data_dir, feature_path)
         if not os.path.exists(feature_path):
             raise FileNotFoundError(f"特征文件不存在: {feature_path}")
         self.features = np.load(feature_path).astype(np.float32)  # (N, D)
