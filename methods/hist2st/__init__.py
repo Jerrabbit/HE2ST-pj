@@ -35,10 +35,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from common.benchmark.harness import _invert_normalization
+from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
 from common.data.expression import load_expression, normalize_expression
 from common.data.slide_tiling import knn_adjacency, tile_rois
-from common.eval.metrics import auroc, pcc, spcc, topk_accuracy
 from .model import Hist2STModel, NB_loss, ZINB_loss
 
 __all__ = ["Hist2STModel", "build_model", "train_function", "evaluate_slide"]
@@ -153,27 +152,14 @@ def _predict_roi(model, sub_patches, sub_coords, device) -> np.ndarray:
 
 def _compute_metrics(y_true_norm: np.ndarray, y_pred: np.ndarray,
                      gene_norm: str, stats: dict | None) -> dict:
-    """与 common/benchmark/harness.evaluate() 完全一致的指标语义。
+    """与 common/benchmark/harness.evaluate() 完全一致的指标语义（向量化）。
 
     PCC/SPCC 在归一化空间逐基因；Top-k/AUROC 经 _invert_normalization 逆变换到
     raw counts 语义后计算（与 harness 相同）。
     """
-    G = y_true_norm.shape[1]
-    pccs = [pcc(y_true_norm[:, g], y_pred[:, g]) for g in range(G)]
-    spccs = [spcc(y_true_norm[:, g], y_pred[:, g]) for g in range(G)]
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
-    topk = {}
-    for k in (10, 50, 100):
-        vals = [topk_accuracy(t, p, k) for t, p in zip(y_true_raw, y_pred_raw)]
-        topk[f"top{k}"] = float(np.mean(vals))
-    aurocs = [auroc(y_true_raw[:, g], y_pred_raw[:, g]) for g in range(G)]
-    return {
-        "PCC": float(np.nanmean(pccs)),
-        "SPCC": float(np.nanmean(spccs)),
-        **topk,
-        "AUROC": float(np.nanmean(aurocs)),
-    }
+    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw)
 
 
 def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,

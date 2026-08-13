@@ -37,7 +37,7 @@ import torch.nn.functional as F
 from scipy import sparse
 from scipy.spatial import cKDTree
 
-from common.benchmark.harness import _invert_normalization
+from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
 from common.data.expression import load_expression, normalize_expression
 from common.data.slide_tiling import (
     build_hypergraph,
@@ -45,7 +45,6 @@ from common.data.slide_tiling import (
     sparse_to_torch,
     tile_rois,
 )
-from common.eval.metrics import auroc, pcc, spcc, topk_accuracy
 from .model import SpatialExModel
 
 __all__ = ["SpatialExModel", "build_model", "train_function", "evaluate_slide"]
@@ -173,30 +172,10 @@ def _compute_metrics(
     stats: dict | None,
     topk_ks: tuple = (10, 50, 100),
 ) -> dict:
-    """与 harness.evaluate 完全一致的指标计算（PCC/SPCC 归一化空间，Top-k/AUROC 逆变换 raw）。"""
+    """与 harness.evaluate 完全一致的指标计算（向量化，PCC/SPCC 归一化空间，Top-k/AUROC 逆变换 raw）。"""
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
-    G = y_true_raw.shape[1]
-
-    pccs, spccs = [], []
-    for g in range(G):
-        t, p = y_true_norm[:, g], y_pred[:, g]
-        pccs.append(pcc(t, p))
-        spccs.append(spcc(t, p))
-
-    topk = {}
-    for k in topk_ks:
-        vals = [topk_accuracy(t, p, k) for t, p in zip(y_true_raw, y_pred_raw)]
-        topk[f"top{k}"] = float(np.mean(vals))
-
-    aurocs = [auroc(y_true_raw[:, g], y_pred_raw[:, g]) for g in range(G)]
-
-    return {
-        "PCC": float(np.nanmean(pccs)) if pccs else float("nan"),
-        "SPCC": float(np.nanmean(spccs)) if spccs else float("nan"),
-        **topk,
-        "AUROC": float(np.nanmean(aurocs)) if aurocs else float("nan"),
-    }
+    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw, topk_ks)
 
 
 def evaluate_slide(
