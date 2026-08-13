@@ -18,6 +18,7 @@ import torch
 
 from common.benchmark.harness import evaluate
 from common.data.dataset import FeatureDataset, HESTDataset
+from common.data.expression import load_stats_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,8 +56,12 @@ def main() -> None:
 
     ref_stats = None
     if args.stats_file and os.path.exists(args.stats_file):
-        with open(args.stats_file) as f:
-            ref_stats = json.load(f)
+        ref_stats = load_stats_json(args.stats_file)
+    elif ref_stats is None:
+        # 默认复用同输出目录下的训练集统计量（防止在测试集上自拟合泄漏）
+        train_stats = os.path.join(args.output_dir, "train_stats.json")
+        if os.path.exists(train_stats):
+            ref_stats = load_stats_json(train_stats)
 
     if getattr(model, "input_type", "patch") == "feature":
         feature_file = getattr(model, "feature_file", None)  # 方法自带特征文件（如 X_ctranspath.npy）

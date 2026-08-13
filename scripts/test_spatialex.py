@@ -16,7 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 import torch
 
-from common.data.expression import load_expression, normalize_expression
+from common.data.expression import (
+    load_expression,
+    load_stats_json,
+    normalize_expression,
+)
 from methods.spatialex import build_model, evaluate_slide
 
 
@@ -28,17 +32,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore", help="与训练一致的表达归一化方式")
     p.add_argument("--stats_path", default=None,
-                   help="训练集拟合的归一化统计量 json（None = 在测试集上拟合）")
+                   help="训练集拟合的归一化统计量 json（None 时依次尝试 output_dir/train_stats.json、测试集自拟合）")
     p.add_argument("--device", default="cuda")
     p.add_argument("--output_dir", default="outputs/spatialex", help="结果输出目录")
     return p.parse_args()
 
 
-def _load_stats(test_dir: str, gene_norm: str, stats_path: str | None) -> dict | None:
-    """读取训练集拟合的归一化统计量；未提供则在测试集上自拟合。"""
+def _load_stats(test_dir: str, gene_norm: str, stats_path: str | None,
+                output_dir: str) -> dict | None:
+    """读取训练集拟合的归一化统计量；未提供则尝试训练目录的 train_stats.json，最后测试集自拟合。"""
     if stats_path:
-        with open(stats_path) as f:
-            return json.load(f)
+        return load_stats_json(stats_path)
+    train_stats = os.path.join(output_dir, "train_stats.json")
+    if os.path.exists(train_stats):
+        return load_stats_json(train_stats)
     expr_raw, _ = load_expression(test_dir)
     _, stats = normalize_expression(expr_raw, gene_norm)
     return stats
@@ -61,7 +68,7 @@ def main() -> None:
     print(f"SpatialEx 模型就绪: num_genes={num_genes} in_dim={in_dim} "
           f"hidden_dim={hidden_dim} num_layers={num_layers}", flush=True)
 
-    stats = _load_stats(args.test_dir, args.gene_norm, args.stats_path)
+    stats = _load_stats(args.test_dir, args.gene_norm, args.stats_path, args.output_dir)
     results = evaluate_slide(model, args.test_dir, args.gene_norm, stats,
                              args.device, args.output_dir)
     print(json.dumps(results, ensure_ascii=False, indent=2))

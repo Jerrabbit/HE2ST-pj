@@ -42,6 +42,55 @@ def subset_genes(
     return expr_raw[:, idx]
 
 
+# --------------------------------------------------------------------------- #
+# 归一化统计量的序列化（跨进程/跨文件保存）
+# --------------------------------------------------------------------------- #
+def serialize_stats(stats: dict | None) -> dict | None:
+    """把 normalize_expression 的统计量 dict 转成可 JSON 序列化的纯 Python 类型。"""
+    if stats is None:
+        return None
+    out = {}
+    for k, v in stats.items():
+        if isinstance(v, np.ndarray):
+            out[k] = v.tolist()
+        elif isinstance(v, np.generic):
+            out[k] = v.item()
+        else:
+            out[k] = v
+    return out
+
+
+def deserialize_stats(stats: dict | None) -> dict | None:
+    """把 serialize_stats 的输出转回 normalize_expression / _invert_normalization 需要的格式。"""
+    if stats is None:
+        return None
+    out = {}
+    for k, v in stats.items():
+        if isinstance(v, list):
+            out[k] = np.asarray(v)
+        else:
+            out[k] = v
+    return out
+
+
+def save_stats_json(stats: dict | None, path: str) -> None:
+    """把训练集拟合的归一化统计量写入 JSON（供测试阶段复用，避免在测试集上自拟合）。"""
+    import json
+
+    with open(path, "w") as f:
+        json.dump(serialize_stats(stats), f, ensure_ascii=False)
+
+
+def load_stats_json(path: str) -> dict | None:
+    """读取 save_stats_json 写入的统计量；文件不存在时返回 None。"""
+    import json
+
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return deserialize_stats(json.load(f))
+
+
 def normalize_expression(
     expr_raw: np.ndarray,
     gene_norm: str = "log1p_zscore",

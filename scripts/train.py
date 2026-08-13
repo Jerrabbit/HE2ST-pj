@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 from common.benchmark.harness import fit
 from common.data.dataset import FeatureDataset, HESTDataset
+from common.data.expression import save_stats_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,6 +78,8 @@ def main() -> None:
     train_ds = _make_dataset(model, args.train_dir, gene_list, args.gene_norm,
                              None, args.img_size, args.debug)
     stats = train_ds.stats
+    os.makedirs(args.output_dir, exist_ok=True)
+    save_stats_json(stats, os.path.join(args.output_dir, "train_stats.json"))  # 测试复用，防泄漏
     valid_ds = _make_dataset(model, args.valid_dir, gene_list, args.gene_norm,
                              stats, args.img_size, args.debug)
 
