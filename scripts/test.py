@@ -59,7 +59,9 @@ def main() -> None:
             ref_stats = json.load(f)
 
     if getattr(model, "input_type", "patch") == "feature":
-        ds = FeatureDataset(args.test_dir, gene_list=gene_list, gene_norm=args.gene_norm,
+        feature_file = getattr(model, "feature_file", None)  # 方法自带特征文件（如 X_ctranspath.npy）
+        ds = FeatureDataset(args.test_dir, feature_path=feature_file,
+                            gene_list=gene_list, gene_norm=args.gene_norm,
                             ref_stats=ref_stats)
     else:
         ds = HESTDataset(args.test_dir, gene_list=gene_list, gene_norm=args.gene_norm,

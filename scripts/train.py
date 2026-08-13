@@ -43,8 +43,9 @@ def parse_args() -> argparse.Namespace:
 
 def _make_dataset(model, data_dir, gene_list, gene_norm, ref_stats, img_size, debug):
     if getattr(model, "input_type", "patch") == "feature":
-        return FeatureDataset(data_dir, gene_list=gene_list, gene_norm=gene_norm,
-                              ref_stats=ref_stats, debug=debug)
+        feature_file = getattr(model, "feature_file", None)  # 方法自带特征文件（如 X_ctranspath.npy）
+        return FeatureDataset(data_dir, feature_path=feature_file, gene_list=gene_list,
+                              gene_norm=gene_norm, ref_stats=ref_stats, debug=debug)
     return HESTDataset(data_dir, gene_list=gene_list, gene_norm=gene_norm,
                        ref_stats=ref_stats, img_size=img_size, debug=debug)
 
