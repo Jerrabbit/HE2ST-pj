@@ -1,0 +1,22 @@
+# HE2ST-pj 基础依赖（随各方法实现逐步补充；远程服务器环境 myenv1 已配置）
+numpy
+scipy
+scikit-learn
+pandas
+pytest
+
+# 图像 / WSI
+pillow
+opencv-python
+openslide-python
+
+# 深度学习（远程服务器已装 CUDA 版本）
+torch
+torchvision
+
+# 空间转录组处理
+anndata
+scanpy
+
+# Foundation Model 权重加载
+huggingface-hub
