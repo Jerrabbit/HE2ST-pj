@@ -1,11 +1,17 @@
 """通用 H&E+ST 配对数据集（所有方法复用）。
 
-数据目录约定（与现有 xenium_rep1/rep2 一致，见 common/data/preprocess.py）：
+数据目录约定（与 common/data/preprocess.py 输出一致）：
     data_dir/
-        metadata.csv          (cell_id, x_centroid, y_centroid, image_col, image_row, patch_path)
-        gene_expression.npy   (N, G) 表达矩阵
+        metadata.csv          (cell_id, x_centroid, y_centroid, patch_path)
+        gene_expression.npy   (N, G) **raw counts** 表达矩阵
         gene_names.txt        每行一个基因名
         patches/cell_{id}.png 256×256 H&E patch
+
+提供两个数据集：
+- HESTDataset：patch 输入（CNN/Transformer 类方法，如 ST-Net、Hist2ST、UNI2+MLP 等）
+- FeatureDataset：预提取特征输入（特征型方法，如 DeepPT、SpatialEx、GHIST、UNI2+MLP 特征版）
+
+归一化统一走 common/data/expression.py：z-score/norm_total 统计量在训练集上拟合。
 """
 from __future__ import annotations
 
@@ -17,20 +23,41 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from .expression import load_expression, normalize_expression
+
 _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
 
+def _load_targets(
+    data_dir: str,
+    gene_list: list[str] | None,
+    gene_norm: str,
+    ref_stats: dict | None,
+):
+    """读取表达矩阵并按统一约定归一化。
+
+    返回：
+        expr_norm: (N, G) float32 归一化表达矩阵
+        gene_names: 当前使用的基因名列表
+        stats: 归一化统计量（供测试集复用）
+    """
+    expr_raw, gene_names = load_expression(data_dir)
+    if gene_list is not None:
+        expr_raw = expr_raw[:, [gene_names.index(g) for g in gene_list]]
+        gene_names = list(gene_list)
+    expr_norm, stats = normalize_expression(expr_raw, gene_norm, ref_stats)
+    return expr_norm, gene_names, stats
+
+
 class HESTDataset(Dataset):
-    """由 (H&E patch, ST 表达向量) 配对组成的数据集。
+    """由 (H&E patch, ST 表达向量) 配对组成的数据集（patch 输入）。
 
     参数：
         data_dir: 数据集目录（见模块 docstring）
         gene_list: 基因子集（None = 全部基因）
-        gene_norm: 表达归一化：
-            'log1p_zscore'   log1p 后按基因 z-score（默认）
-            'log1p_norm_total' 库大小归一化后 log1p（SpatialEx 原始做法）
-            'none'           不处理
+        gene_norm: 'log1p_zscore'（默认）| 'log1p_norm_total' | 'none'
+        ref_stats: 训练集归一化统计量（None = 在本数据集上拟合）
         img_size: 目标图像尺寸（0 = 保持原图）
         debug: 仅加载前 100 个样本
     """
@@ -40,6 +67,7 @@ class HESTDataset(Dataset):
         data_dir: str,
         gene_list: list[str] | None = None,
         gene_norm: str = "log1p_zscore",
+        ref_stats: dict | None = None,
         img_size: int = 0,
         debug: bool = False,
     ):
@@ -47,47 +75,16 @@ class HESTDataset(Dataset):
         self.data_dir = data_dir
         self.img_size = img_size
         self.gene_norm = gene_norm
+        self.ref_stats = ref_stats
 
         meta_path = os.path.join(data_dir, "metadata.csv")
         self.metadata = pd.read_csv(meta_path)
         if debug and len(self.metadata) > 100:
             self.metadata = self.metadata.iloc[:100]
 
-        expr_path = os.path.join(data_dir, "gene_expression.npy")
-        if not os.path.exists(expr_path):
-            raise FileNotFoundError(f"gene_expression.npy 不存在于 {expr_path}，请先运行预处理")
-        self.expr_all = np.load(expr_path).astype(np.float32)  # (N, G)
-
-        gene_names_path = os.path.join(data_dir, "gene_names.txt")
-        if os.path.exists(gene_names_path):
-            with open(gene_names_path) as f:
-                self.gene_names = [line.strip() for line in f]
-        else:
-            self.gene_names = [f"gene_{i}" for i in range(self.expr_all.shape[1])]
-
-        if gene_list is not None:
-            self.gene_list = list(gene_list)
-            idx = [self.gene_names.index(g) for g in self.gene_list]
-            self.expr_all = self.expr_all[:, idx]
-        else:
-            self.gene_list = self.gene_names
-
-        if gene_norm == "log1p_zscore":
-            expr = np.log1p(self.expr_all)
-            self.means = expr.mean(axis=0, keepdims=True)
-            self.stds = expr.std(axis=0, keepdims=True)
-            self.stds[self.stds < 1e-8] = 1.0
-            self.expr_all = ((expr - self.means) / self.stds).astype(np.float32)
-        elif gene_norm == "log1p_norm_total":
-            self._apply_norm_total_log1p()
-
-    def _apply_norm_total_log1p(self) -> None:
-        """SpatialEx 原始做法：库大小归一化（各细胞总counts对齐到中位数）后 log1p。"""
-        X = self.expr_all
-        lib = X.sum(axis=1, keepdims=True)
-        lib[lib == 0] = 1
-        X = X / lib * np.median(lib)
-        self.expr_all = np.log1p(X).astype(np.float32)
+        self.expr_all, self.gene_list, self.stats = _load_targets(
+            data_dir, gene_list, gene_norm, ref_stats
+        )
 
     def __len__(self) -> int:
         return len(self.metadata)
@@ -106,5 +103,57 @@ class HESTDataset(Dataset):
             "patch": img,                                # (3, H, W) 已 ImageNet 归一化
             "gene_expr": torch.from_numpy(self.expr_all[idx].copy()),  # (G,)
             "coords": torch.from_numpy(coords),          # (2,)
+            "cell_id": row["cell_id"],
+        }
+
+
+class FeatureDataset(Dataset):
+    """由 (预提取特征, ST 表达向量) 配对组成的数据集（特征输入）。
+
+    特征文件：data_dir/X_uni2.npy（或通过 feature_path 指定），(N, D)。
+    适用于 DeepPT、SpatialEx、GHIST、UNI2+MLP（特征版）等使用预提取特征的方法。
+
+    参数：
+        data_dir: 数据集目录（含 metadata.csv、gene_expression.npy、特征 .npy）
+        feature_path: 特征文件路径（默认 data_dir/X_uni2.npy）
+        gene_list / gene_norm / ref_stats: 同 HESTDataset
+        debug: 仅加载前 100 个样本
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        feature_path: str | None = None,
+        gene_list: list[str] | None = None,
+        gene_norm: str = "log1p_zscore",
+        ref_stats: dict | None = None,
+        debug: bool = False,
+    ):
+        super().__init__()
+        self.data_dir = data_dir
+
+        feature_path = feature_path or os.path.join(data_dir, "X_uni2.npy")
+        if not os.path.exists(feature_path):
+            raise FileNotFoundError(f"特征文件不存在: {feature_path}")
+        self.features = np.load(feature_path).astype(np.float32)  # (N, D)
+
+        self.metadata = pd.read_csv(os.path.join(data_dir, "metadata.csv"))
+        if debug and len(self.metadata) > 100:
+            self.metadata = self.metadata.iloc[:100]
+
+        self.expr_all, self.gene_list, self.stats = _load_targets(
+            data_dir, gene_list, gene_norm, ref_stats
+        )
+
+    def __len__(self) -> int:
+        return len(self.metadata)
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self.metadata.iloc[idx]
+        coords = np.array([row["x_centroid"], row["y_centroid"]], dtype=np.float32)
+        return {
+            "feature": torch.from_numpy(self.features[idx].copy()),      # (D,)
+            "gene_expr": torch.from_numpy(self.expr_all[idx].copy()),    # (G,)
+            "coords": torch.from_numpy(coords),                          # (2,)
             "cell_id": row["cell_id"],
         }
