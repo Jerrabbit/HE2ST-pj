@@ -27,9 +27,17 @@ Euler ODE），机制高度同源 —— STFlow 的实现可大量复用 Phoenix
 
 | 资源 | 状态 | 说明 |
 |---|---|---|
-| UNI / GigaPath 基础模型权重 | ⚠️ UNI 有（UNI1/UNI2 在服务器） | GigaPath 需 HF 下载 |
+| UNI / GigaPath 基础模型权重 | ✅ **UNI 够用，无需 GigaPath** | 官方 `--feature_encoder` 默认 `uni_v1_official`（UNI）；GigaPath 只是可选枚举之一（`uni_v1_official\|resnet50_trunc\|ciga\|gigapath`） |
+| UNI2 特征 | ✅ 已有 | 我们的 `X_uni2.npy` 是 1536-d，正好填官方 `feature_dim` 映射的 **gigapath→1536** 槽位，无需真下载 GigaPath 权重 |
 | 自训练流程 | ❌ 需搭建 | 官方对每数据集自训练 FM（denoiser 从头训） |
 | 显存/算力 | 需评估 | 大模型 + 流匹配训练，耗卡 |
+
+> **为什么文档里出现 GigaPath？** 因为 STFlow 官方 `train.py` 把 `--feature_encoder`
+> 作为命令行可选项，GigaPath 只是其中之一（对应 feature_dim=1536）。官方默认用 UNI
+> （feature_dim=1024）。我们用 1536-d 的 UNI2 特征时，把 feature_encoder 设为
+> `gigapath` 仅是为了拿到 1536 的 feature_dim，**并不需要 GigaPath 的权重**。
+> 官方从 `<embed_dataroot>/<dataset>/<feature_encoder>/fp32/<sample_id>.h5` 读预计算
+> tile 特征——我们只需把 UNI2 特征按该目录结构写成 .h5 即可接入。
 
 ## 与本 benchmark 的兼容性
 
@@ -37,7 +45,8 @@ Euler ODE），机制高度同源 —— STFlow 的实现可大量复用 Phoenix
   输出 per-cell 表达，可走统一归一化空间评估。
 - **实现路径**：
   1. 复用 Phoenix 的流匹配骨架（interpolant / denoiser / Euler ODE / 先验采样）；
-  2. 条件用 UNI2 特征（替代官方整片 tile 条件），denoiser 结构照 STFlow 官方；
+  2. 条件用 UNI2 特征（替代官方整片 tile 条件，feature_encoder=`gigapath` 取
+     feature_dim=1536，权重本身用我们的 UNI2），denoiser 结构照 STFlow 官方；
   3. 先验 gaussian/zinb 采样照官方 `flow/noise.py`；
   4. 评估与 Phoenix 一致（采样确定性：固定 seed）。
 

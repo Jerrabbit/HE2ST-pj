@@ -49,6 +49,7 @@ def predict(
         y_pred:      (N, G) 归一化空间预测（用于 PCC/SPCC）
         y_pred_raw:  (N, G) 逆变换后的 raw counts 语义预测（用于 Top-k/AUROC）
     """
+    model.to(device)  # 保证模型与输入同设备（test.py 从 CPU checkpoint 加载后直接评估也能跑）
     model.eval()
     true_list, pred_list = [], []
     with torch.no_grad():

@@ -162,16 +162,18 @@ def _compute_metrics(y_true_norm: np.ndarray, y_pred: np.ndarray,
     return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw)
 
 
-def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
-                   device: str = "cuda", output_dir: str | None = None) -> dict:
-    """整切片 ROI 图推理评估，返回与 harness evaluate() 相同的指标 dict。
+def _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm: str,
+                          stats: dict | None, device: str = "cuda",
+                          output_dir: str | None = None) -> dict:
+    """对**已加载的切片数组**做整切片 ROI 图推理评估（evaluate_slide 的核心）。
 
     覆盖对齐策略：**首 ROI 优先**（first-ROI-wins）——重叠 ROI 中先预测到该细胞的
     ROI 负责其预测，保证确定性；稀疏边缘未覆盖细胞用 kNN 邻居补一个 ROI。
+    结果与 evaluate_slide 逐字节一致，仅省去重复的 patch 磁盘加载
+    （训练期验证切片每 epoch 复用同一份数组，避免每 epoch 重读 10 万+ 张 PNG）。
     """
     model = model.to(device)
     model.eval()
-    coords, patches, expr_norm, _expr_raw = _load_slide(test_dir, gene_norm, stats, model.fig_size)
     N, G = expr_norm.shape
     rois = _tile_slide(coords)
     y_pred = np.full((N, G), np.nan, dtype=np.float32)
@@ -211,6 +213,17 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
         with open(os.path.join(output_dir, "test_results.json"), "w") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
     return results
+
+
+def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
+                   device: str = "cuda", output_dir: str | None = None) -> dict:
+    """整切片 ROI 图推理评估，返回与 harness evaluate() 相同的指标 dict。
+
+    = _load_slide + _predict_slide_arrays（后者可在训练期用缓存数组复用）。
+    """
+    coords, patches, expr_norm, _expr_raw = _load_slide(test_dir, gene_norm, stats, model.fig_size)
+    return _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm,
+                                 stats, device, output_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +277,12 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     zinb_coef = float(getattr(args, "zinb_coef", 0.0))
 
     coords, patches, expr_norm, expr_raw = _load_slide(train_dir, gene_norm, stats, model.fig_size)
+    # 验证切片只加载一次（patches 是 ~17GB 数组），跨 epoch 复用避免每 epoch 重读磁盘
+    valid_slide = None
+    if valid_dir is not None:
+        valid_slide = _load_slide(valid_dir, gene_norm, stats, model.fig_size)
+        print(f"[Hist2ST] 验证切片已预加载: {len(valid_slide[0])} cells "
+              f"({valid_slide[1].nbytes/1e9:.1f} GB)", flush=True)
     rng = np.random.default_rng(0)
 
     best_pcc, best_state = -float("inf"), None
@@ -298,8 +317,9 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
 
         rec = {"epoch": epoch, "train_loss": train_loss}
         if valid_dir is not None:
-            ev = evaluate_slide(model, valid_dir, gene_norm, stats, device,
-                                output_dir=os.path.join(args.output_dir, f"val_epoch{epoch}"))
+            # 复用预加载的验证切片数组（coords, patches, expr_norm；expr_raw 不参与评估）
+            ev = _predict_slide_arrays(model, *valid_slide[:3], gene_norm, stats, device,
+                                       output_dir=os.path.join(args.output_dir, f"val_epoch{epoch}"))
             rec.update(ev)
             if ev["PCC"] == ev["PCC"] and ev["PCC"] > best_pcc + 1e-4:
                 best_pcc = ev["PCC"]

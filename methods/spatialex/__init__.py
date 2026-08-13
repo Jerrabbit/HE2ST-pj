@@ -194,6 +194,7 @@ def evaluate_slide(
     返回并保存 {"PCC", "SPCC", "top10", "top50", "top100", "AUROC"} 到
     output_dir/test_results.json。
     """
+    model.to(device)  # 保证模型与图/特征同设备（test_spatialex.py 从 CPU checkpoint 加载）
     model.eval()
     coords, features, expr_norm = _load_slide(test_dir, gene_norm, stats)
     H = build_hypergraph(coords, k=K_NEIGHBORS, self_loop=True)

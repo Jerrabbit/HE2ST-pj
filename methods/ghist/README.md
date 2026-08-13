@@ -23,10 +23,14 @@ Local-Global 假设高度相关，是重要对比方法。
 
 | 资源 | 状态 | 说明 |
 |---|---|---|
-| 整张切片 H&E 图像（tif） | ❌ 未上传 | 官方输入是全分辨率 tif + 核分割 tif |
+| 整张切片 H&E 图像（tif） | ⚠️ **本地有、未上传远程** | 本地 `D:\hest_data\datasets\breast\*.ome.tif`（S1–S4，含 Top/Mid/Bot）；远程 rep1/rep2 只有 per-cell 256×256 patch，**无整片图**，需 scp 上传 |
 | 细胞核分割图 `he_image_nuclei_seg.tif` | ❌ 需生成 | 官方用 cellpose 或 Xenium 自带分割，把核轮廓转成 mask |
 | 细胞类型标注 | ❌ 需准备 | Xenium 有细胞分型（但来自转录组，需与 H&E 对齐） |
 | `torchstain`（HE 染色归一化）等依赖 | 未装 | requirements.txt 额外包 |
+
+> 说明：per-cell patch 本身就是从整片 H&E 裁剪的，用户直觉"图不是已经有了吗"是对的——
+> 但 GHIST 的输入是**全分辨率整片 tif + 核分割 mask**，不是局部 patch，因此整片图
+> 是独立于 patches 的必需资源（本地已有，缺的是上传到远程）。
 
 ## 与本 benchmark 的兼容性
 
@@ -42,7 +46,7 @@ Local-Global 假设高度相关，是重要对比方法。
 
 1. 本轮以**可行性文档**记录。
 2. 实现路径（若启动）：
-   - 上传每张切片整片 H&E（Xenium 对应分辨率 tif）；
+   - 从本地 `D:\hest_data\datasets\breast\*.ome.tif` 上传每张切片的整片 H&E 到远程；
    - 用 Xenium 细胞多边形生成核分割 mask（避免额外跑 cellpose）；
    - UNet 分割+分型、cell-graph、邻居组件全部照官方架构实现；
    - 输出转统一归一化空间评估。工作量大（数据管线为主，模型代码可直接复用官方）。

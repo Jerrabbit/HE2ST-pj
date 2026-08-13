@@ -73,7 +73,9 @@ def main() -> None:
                          ref_stats=ref_stats)
 
     from torch.utils.data import DataLoader
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    # 测试是单趟评估，num_workers=0 避免多进程 IPC 在受限 shell 下触发
+    # "Too many open files"（远程 nohup/ssh 环境文件描述符上限可能较低）
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     stats = ref_stats or ds.stats
     results = evaluate(model, loader, args.device, args.gene_norm, stats)
