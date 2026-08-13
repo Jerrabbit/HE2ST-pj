@@ -138,6 +138,7 @@ def fit(
     eval_stats: dict | None = None,
     verbose: bool = True,
     config: dict | None = None,
+    patience: int = 10,
 ) -> dict:
     """通用回归训练（MSE 目标，Adam 优化器）。
 
@@ -156,6 +157,7 @@ def fit(
     )
     os.makedirs(out_dir, exist_ok=True)
     best_pcc, best_state = -float("inf"), None
+    no_improve = 0
     history = []
     model = model.to(device)
 
@@ -179,11 +181,14 @@ def fit(
             ev = evaluate(model, valid_loader, device, gene_norm, eval_stats)
             rec.update(ev)
             pcc = ev["PCC"]
-            if pcc == pcc and pcc > best_pcc:  # 非 nan 且更优
+            if pcc == pcc and pcc > best_pcc + 1e-4:  # 非 nan 且更优
                 best_pcc = pcc
                 best_state = {
                     k: v.cpu().clone() for k, v in model.state_dict().items()
                 }
+                no_improve = 0
+            else:
+                no_improve += 1
         history.append(rec)
         if verbose:
             print(
@@ -191,6 +196,9 @@ def fit(
                 + (f"val_PCC={rec.get('PCC', float('nan')):.4f}" if valid_loader else ""),
                 flush=True,
             )
+        if valid_loader is not None and no_improve >= patience:
+            print(f"[early stop] val_PCC {patience} 个 epoch 未提升，在 epoch {epoch} 停止", flush=True)
+            break
 
     if best_state is not None:
         ckpt = os.path.join(out_dir, "best.pt")

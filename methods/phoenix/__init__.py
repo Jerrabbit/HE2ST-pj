@@ -28,6 +28,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     os.makedirs(args.output_dir, exist_ok=True)
 
     best_pcc, best_state = -float("inf"), None
+    no_improve = 0
+    patience = int(getattr(args, "patience", 10))
     history = []
 
     for epoch in range(1, args.epochs + 1):
@@ -49,9 +51,16 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
         print(f"[Phoenix epoch {epoch}/{args.epochs}] loss={train_loss:.4f} "
               f"val_PCC={ev['PCC']:.4f}", flush=True)
 
-        if ev["PCC"] == ev["PCC"] and ev["PCC"] > best_pcc:
+        if ev["PCC"] == ev["PCC"] and ev["PCC"] > best_pcc + 1e-4:
             best_pcc = ev["PCC"]
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+        if no_improve >= patience:
+            print(f"[Phoenix early stop] val_PCC {patience} 个 epoch 未提升，"
+                  f"在 epoch {epoch} 停止", flush=True)
+            break
 
     if best_state is not None:
         torch.save({"model": best_state,

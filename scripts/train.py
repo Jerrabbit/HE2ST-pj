@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train_dir", required=True, help="训练集数据目录")
     p.add_argument("--valid_dir", required=True, help="验证集数据目录")
     p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--patience", type=int, default=10,
+                   help="早停：val_PCC 连续 N 个 epoch 未提升则停止（防过拟合）")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--weight_decay", type=float, default=0.0)
@@ -99,7 +101,8 @@ def main() -> None:
             out_dir=args.output_dir, weight_decay=args.weight_decay,
             gene_norm=args.gene_norm, eval_stats=stats,
             config={"method": args.method, "num_genes": num_genes,
-                    "gene_norm": args.gene_norm, "gene_list": gene_list})
+                    "gene_norm": args.gene_norm, "gene_list": gene_list},
+            patience=args.patience)
         print(f"训练完成，最优模型保存于 {args.output_dir}/best.pt")
 
 

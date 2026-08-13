@@ -281,6 +281,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     rng = np.random.default_rng(0)
 
     best_pcc, best_state = -float("inf"), None
+    no_improve = 0
+    patience = int(getattr(args, "patience", 10))
     history = []
 
     for epoch in range(1, args.epochs + 1):
@@ -313,12 +315,19 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             ev = evaluate_slide(model, valid_dir, gene_norm, stats, device,
                                 output_dir=os.path.join(args.output_dir, f"val_epoch{epoch}"))
             rec.update(ev)
-            if ev["PCC"] == ev["PCC"] and ev["PCC"] > best_pcc:
+            if ev["PCC"] == ev["PCC"] and ev["PCC"] > best_pcc + 1e-4:
                 best_pcc = ev["PCC"]
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
         history.append(rec)
         print(f"[Hist2ST epoch {epoch}/{args.epochs}] loss={train_loss:.4f} "
               + (f"val_PCC={rec.get('PCC', float('nan')):.4f}" if valid_dir else ""), flush=True)
+        if valid_dir is not None and no_improve >= patience:
+            print(f"[Hist2ST early stop] val_PCC {patience} 个 epoch 未提升，"
+                  f"在 epoch {epoch} 停止", flush=True)
+            break
 
     if best_state is not None:
         torch.save({
