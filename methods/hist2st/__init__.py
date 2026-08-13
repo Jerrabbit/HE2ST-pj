@@ -23,6 +23,13 @@ Hist2ST 为**全切片图方法**：在 ROI（物理坐标网格切片）内对�
     - 位置嵌入：ROI 局部坐标归一化到 [0, n_pos) 取整（官方数据本就在该范围）。
     - patch 输入为 [0,1] float、不做 ImageNet 归一化（官方加载原始像素 im 后 /255）。
     - ZINB / bake 默认关（benchmark 统一在归一化空间评估，语义干净）。
+
+收敛结论（2026-08-14，相邻切片基准）：
+    官方设计 350 epoch + lr 1e-5 + ZINB + 自蒸馏；统一协议（50 epoch, lr 1e-3, 纯 MSE）
+    下 6 epoch 后 val_PCC≈0（loss 卡在归一化表达方差）。超参探针（lr 3e-3/1e-2 ×
+    ZINB 0/0.25，各 5 epoch）全部无法收敛：纯 MSE val_PCC≈0，ZINB 最高峰值 0.027 且
+    过拟合回落。根因：该架构从原始 patch 从头训练（不用预训练特征），学组织特征太慢。
+    如实记为 null result。探针日志：logs/hist2st_probe/。
 """
 from __future__ import annotations
 

@@ -40,5 +40,26 @@ python -m pytest tests/ -v
 
 ## 状态
 
-- 目录框架已搭建，评估指标已实现并通过测试；各方法实现待填。
-- 初步实验先在两张相邻切片上进行（数据已上传远程服务器），之后进行三层次泛化评测（同切片左右半 → 相邻切片 → 同癌种多切片）、多组学与跨癌种验证。
+- 12 方法中 7 个已实现（BLEEP、Phoenix、Path2Space、SpatialEx、ST-Net、Hist2ST、UNI2+MLP），5 个仅可行性文档（Pixel2Gene、GHIST、DeepPT、SQUALL、STFlow，阻塞详见各 `methods/<name>/README.md`）。
+- 相邻切片基准（rep1 训练 → rep2 测试）已完成，结果见下节。之后进行三层次泛化评测（同切片左右半 → 同癌种多切片）、多组学与跨癌种验证。
+
+## 相邻切片基准结果（rep1 → rep2）
+
+协议：50 epoch + val_PCC patience=10 早停（取 best 模型），lr=1e-3，AdamW，
+`log1p_zscore` 归一化（统计量只在训练集拟合，测试集复用，防泄漏），统一评估（PCC/SPCC
+归一化空间逐基因，Top-k/AUROC 逆变换回 raw counts 语义）。
+
+| 方法 | PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC | 备注 |
+|---|---|---|---|---|---|---|---|
+| **UNI2+MLP**（基线） | **0.3245** | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
+| **SpatialEx** | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
+| Phoenix | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 官方为 30 基因蛋白任务，313 基因适配有限 |
+| Hist2ST | — | — | — | — | — | — | **统一协议下不收敛**（见下） |
+
+**Hist2ST 收敛失败说明**：官方设计为 350 epoch + lr 1e-5(Adam) + ZINB + 自蒸馏（bake），
+从原始 patch 从头训练组织特征。统一协议（50 epoch、MSE）下 6 epoch 后 val_PCC≈0、
+loss 卡在归一化表达方差（模型退化为预测每基因均值）。超参探针（子采样 20k 细胞，扫
+lr 3e-3/1e-2 × ZINB 0/0.25，各 5 epoch）显示：纯 MSE 全部 val_PCC≈0；加 ZINB 最高
+峰值仅 0.027 且随后过拟合回落。结论：该架构在 50-epoch 统一协议下无法收敛到有意义
+结果，如实记为 null result（探针日志：`logs/hist2st_probe/`）。不收敛的根因是
+**不使用预训练特征**（从原始 patch 从头学），与简单方法用 UNI2 预训练特征形成对比。
