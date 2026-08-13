@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--weight_decay", type=float, default=0.0)
+    p.add_argument("--zinb", type=float, default=0.0,
+                   help="Hist2ST 专属：模型 ZINB 头系数（官方默认 0.25，0 表示关闭）")
+    p.add_argument("--zinb_coef", type=float, default=0.0,
+                   help="Hist2ST 专属：ZINB 损失权重（loss = MSE + zinb_coef*ZINB）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件（每行一个基因名）")
@@ -53,10 +57,10 @@ def _make_dataset(model, data_dir, gene_list, gene_norm, ref_stats, img_size, de
                        ref_stats=ref_stats, img_size=img_size, debug=debug)
 
 
-def _load_method(method_name: str, num_genes: int):
-    """导入方法模块并构造模型。"""
+def _load_method(method_name: str, num_genes: int, **build_kwargs):
+    """导入方法模块并构造模型。build_kwargs（如 zinb）透传 build_model。"""
     mod = importlib.import_module(f"methods.{method_name}")
-    return mod.build_model(num_genes=num_genes)
+    return mod.build_model(num_genes=num_genes, **build_kwargs)
 
 
 def main() -> None:
@@ -73,7 +77,9 @@ def main() -> None:
     gene_list = probe.gene_list
     print(f"公共基因数: {num_genes}", flush=True)
 
-    model = _load_method(args.method, num_genes)
+    # zinb 是 Hist2ST 专属模型参数（其它方法 build_model 不接受该 kwargs）
+    build_kwargs = {"zinb": args.zinb} if args.method == "hist2st" else {}
+    model = _load_method(args.method, num_genes, **build_kwargs)
     print(f"[{args.method}] input_type={getattr(model, 'input_type', 'patch')} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)
 
