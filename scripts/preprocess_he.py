@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 项目根目录
 
 BASE = "/cpfs01/projects-HDD/cfff-d7ff0c9cdf2f_HDD/hjr_24300980068/HE2ST/datasets"
 REP_H5AD = {
@@ -55,17 +58,28 @@ def stage_patches(args: argparse.Namespace) -> None:
     import numpy as np
     import pandas as pd
 
+    import scipy.sparse as sp
+
     adata = ad.read_h5ad(REP_H5AD[args.rep], backed="r")
     if adata.raw is not None:
         X = adata.raw.X
     else:
         X = adata.X
     keep_pos = pd.Index(adata.obs_names).get_indexer(kept_ids)
-    expr = np.asarray(X[keep_pos].todense()).astype(np.float32)
+    if sp.issparse(X):
+        expr = np.asarray(X[keep_pos].todense()).astype(np.float32)
+    else:
+        expr = np.asarray(X[keep_pos]).astype(np.float32)
+    # h5ad 的 X 已做 log1p（uns['log1p']）。逆变换恢复 raw counts，
+    # 与既有 xenium_rep1/gene_expression.npy 约定一致（Dataset 再自行 log1p_zscore）。
+    expr = np.round(np.expm1(expr)).astype(np.float32)
     np.save(os.path.join(out, "gene_expression.npy"), expr)
     with open(os.path.join(out, "gene_names.txt"), "w") as f:
         f.write("\n".join(adata.var_names) + "\n")
-    print(f"gene_expression.npy {expr.shape} 与 gene_names.txt 已写入 {out}")
+    nnz = expr[expr != 0]
+    print(f"gene_expression.npy {expr.shape} 已写入 {out}")
+    print(f"raw counts 诊断: max={expr.max():.3f} nnz均值={nnz.mean() if len(nnz) else 0:.4f} "
+          f"整数={bool(np.allclose(expr, np.round(expr)))}")
 
 
 def stage_features(args: argparse.Namespace) -> None:
