@@ -1,6 +1,6 @@
-# Pixel2Gene — 可行性评估
+# Pixel2Gene — 实现状态
 
-> 文档顺序第 5 个方法。状态：**待定（需权重），暂未实现**。
+> 文档顺序第 5 个方法。状态：**已实现（HIPT-4K 移植 + 特征提取 + MLP 回归），待权重上传后跑基准**。
 
 ## 方法概述
 
@@ -36,8 +36,28 @@ Pixel2Gene（Zhang et al., 2024，Nature）用 HIPT-4K（Hierarchical Image Pyra
   （已在集群，无需上传）；(b) 下载 HIPT-4K 权重（真正的硬阻塞）；(c) 按官方 binning
   流程把单细胞聚合到 pseudo-spot 再评估。工作量中等，当前缺的是权重。
 
+## 实现进度（2026-08-14）
+
+- **HIPT-4K 模型已移植**：`methods/pixel2gene/hipt/`（官方 hipt_4k.py / hipt_model_utils.py /
+  vision_transformer.py / vision_transformer4k.py 原样复制，einops 已替换为等价原生 torch，
+  远程无 einops；reshape 等价性已本地验证）。
+- **权重已下载本地**：`D:\hest_data\codes\Pixel2Gene\checkpoints\vit_256_small_dino.pth`(704MB) +
+  `vit_4096_xs_dino.pth`(396MB)，上传远程 `~/HE2ST-pj/weights/pixel2gene/` 中。
+- **特征提取**：`scripts/extract_hipt.py` —— 伪 Visium 分箱（100µm 六角网格，官方
+  bin_pseudo_visium 语义）+ 每 spot 取 2048² 上下文（8×8 个 256 patch，真实层级上下文）
+  → HIPT-4K concat[mean256(384), cls4k(192)]=576 维 → 每细胞继承 spot 特征 → X_hipt.npy。
+  rep1 实测：3519 有效 spot，覆盖 96.6% 细胞，无边缘越界。
+- **回归模型**：`methods/pixel2gene/model.py` Pixel2GeneModel（input_type='feature'，
+  统一 MLPHead(576→G)，走标准 harness fit）。
+- **验证结论**：HIPT-4K 前向本地通过（2048² → cls4k(1,192)）；bin 分箱真实坐标验证通过。
+
+## 下一步（权重上传完成后）
+
+1. `python scripts/extract_hipt.py --rep 1/2 --model256 ... --model4k ...` 生成 X_hipt.npy；
+2. `python scripts/train.py --method pixel2gene ...`（标准 harness fit）；
+3. `python scripts/test.py --method pixel2gene ...`。
+
 ## 建议
 
-1. 本轮以**可行性文档**记录（本文件），不写实现。
-2. 若后续上传整片图像并获取 HIPT 权重，可再按 `format_xenium/` 流程实现，
-   评估粒度需与其它方法对齐（pseudo-spot 聚合后比较）。
+1. 本轮以**实现中**记录（权重上传中）。
+2. 若后续获取更完整的 4K 上下文（4096² tile）可扩展，但当前 2048² 上下文已保留层级结构。
