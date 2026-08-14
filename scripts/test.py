@@ -32,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gene_file", default=None, help="公共基因列表文件")
     p.add_argument("--stats_file", default=None,
                    help="训练集表达归一化统计量 json（None 时用测试集自身统计量拟合）")
+    p.add_argument("--pretrained_weights", default=None,
+                   help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
+    p.add_argument("--variant", default=None,
+                   help="方法专属变体（如 pixel2gene cell/spot）")
     p.add_argument("--output_dir", default="outputs")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
@@ -43,7 +47,12 @@ def main() -> None:
     cfg = ckpt.get("config") or {}
 
     mod = importlib.import_module(f"methods.{args.method}")
-    model = mod.build_model(num_genes=cfg.get("num_genes", 313))
+    build_kwargs = {}
+    if args.method == "bleep" and args.pretrained_weights:
+        build_kwargs["pretrained_weights"] = args.pretrained_weights
+    if args.method == "pixel2gene" and args.variant:
+        build_kwargs["variant"] = args.variant
+    model = mod.build_model(num_genes=cfg.get("num_genes", 313), **build_kwargs)
     model.load_state_dict(ckpt["model"])
     if hasattr(mod, "post_load"):
         # 方法需要从 checkpoint 恢复非参数状态（如 BLEEP 的参考检索库）

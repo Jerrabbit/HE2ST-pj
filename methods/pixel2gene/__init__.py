@@ -1,14 +1,17 @@
-"""Pixel2Gene：HIPT-4K 层级特征 + 统一 MLP 回归（伪 Visium spot 级适配）。
+"""Pixel2Gene：HIPT-4K 特征 + 回归（spot 级官方 / cell 级方案 B）。
 
-特征由 scripts/extract_hipt.py 预生成（data_dir/X_hipt.npy，576 维/细胞）。
-训练走标准 harness fit（input_type='feature' + 统一 MLPHead），无自定义 train_function。
+- variant='spot'（默认）：官方伪 Visium spot 级，HIPT-4K 576 维 + 官方 ForwardSumModel 头。
+- variant='cell'：方案 B，level-1 ViT-256 per-cell 384 维 + 统一 MLPHead（cell-level benchmark）。
+特征分别由 scripts/extract_hipt.py / scripts/extract_hipt_cell.py 预生成。
 """
 from __future__ import annotations
 
-from .model import Pixel2GeneModel
+from .model import Pixel2GeneModel, Pixel2GeneCellModel
 
-__all__ = ["Pixel2GeneModel", "build_model"]
+__all__ = ["Pixel2GeneModel", "Pixel2GeneCellModel", "build_model"]
 
 
-def build_model(num_genes: int = 313, **kwargs):
+def build_model(num_genes: int = 313, variant: str = "spot", **kwargs):
+    if variant == "cell":
+        return Pixel2GeneCellModel(num_genes=num_genes, **kwargs)
     return Pixel2GeneModel(num_genes=num_genes, **kwargs)

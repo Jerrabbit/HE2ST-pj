@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--zinb", type=float, default=0.0,
                    help="Hist2ST 专属：模型 ZINB 头系数（官方默认 0.25，0 表示关闭）")
+    p.add_argument("--pretrained_weights", default=None,
+                   help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
+    p.add_argument("--variant", default=None,
+                   help="方法专属变体（如 pixel2gene cell/spot）")
     p.add_argument("--zinb_coef", type=float, default=0.0,
                    help="Hist2ST 专属：ZINB 损失权重（loss = MSE + zinb_coef*ZINB）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
@@ -77,8 +81,12 @@ def main() -> None:
     gene_list = probe.gene_list
     print(f"公共基因数: {num_genes}", flush=True)
 
-    # zinb 是 Hist2ST 专属模型参数（其它方法 build_model 不接受该 kwargs）
+    # 方法专属模型参数（其它方法 build_model 不接受这些 kwargs）
     build_kwargs = {"zinb": args.zinb} if args.method == "hist2st" else {}
+    if args.method == "bleep" and args.pretrained_weights:
+        build_kwargs["pretrained_weights"] = args.pretrained_weights
+    if args.method == "pixel2gene" and args.variant:
+        build_kwargs["variant"] = args.variant
     model = _load_method(args.method, num_genes, **build_kwargs)
     print(f"[{args.method}] input_type={getattr(model, 'input_type', 'patch')} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)

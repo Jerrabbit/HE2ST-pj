@@ -22,7 +22,10 @@ import sys
 import torch
 import torch.nn as nn
 
-__all__ = ["Pixel2GeneModel", "ForwardSumModel", "FeedForward", "ELU", "HIPTFeatureDim"]
+from common.models.mlp_head import MLPHead
+
+__all__ = ["Pixel2GeneModel", "Pixel2GeneCellModel", "ForwardSumModel",
+           "FeedForward", "ELU", "HIPTFeatureDim"]
 
 HIPTFeatureDim = 576  # concat[mean256 (384), cls4k (192)]
 
@@ -91,6 +94,32 @@ class Pixel2GeneModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """HIPT 特征 (B, 576) → (B, G) 归一化表达预测。"""
+        return self.head(x)
+
+
+class Pixel2GeneCellModel(nn.Module):
+    """Pixel2Gene **方案 B（cell-level）**：level-1 ViT-256 特征 + 统一 MLP。
+
+    只用 HIPT 的 level-1（vit_256_small_dino），每细胞自己的 256×256 patch →
+    [CLS] 384 维特征（X_hipt_cell.npy）。**真正的 per-cell 预测**（无 spot 内封顶），
+    作为课题 cell-level benchmark 的 Pixel2Gene 版本。按课题要求 6 统一规则
+    （纯 embedding 需外接头）接统一 MLPHead(384 → G)。
+    """
+
+    input_type = "feature"
+    feature_file = "X_hipt_cell.npy"
+
+    def __init__(self, num_genes: int, hidden_dims: list[int] = (512, 256),
+                 dropout: float = 0.1):
+        super().__init__()
+        self.num_genes = num_genes
+        self.head = MLPHead(
+            input_dim=384, hidden_dims=hidden_dims,
+            output_dim=num_genes, dropout=dropout,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """ViT-256 特征 (B, 384) → (B, G) 归一化表达预测。"""
         return self.head(x)
 
 
