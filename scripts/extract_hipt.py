@@ -110,18 +110,13 @@ def main() -> None:
 
     spacing_px = SPOT_SPACING_UM / MPP
     spot_id, centers = bin_pseudo_visium(coords, spacing_px)
-    # 过滤空 spot（细胞数过少），保留有效 spot
-    keep_spots = np.flatnonzero(np.bincount(spot_id, minlength=len(centers)) >= MIN_CELLS_PER_SPOT)
-    valid_mask = np.isin(spot_id, keep_spots)
-    spot_id = spot_id[valid_mask]
-    coords_valid = coords[valid_mask]
-    n_dropped = int((~valid_mask).sum())
-    if n_dropped:
-        print(f"[HIPT] 丢弃 {n_dropped} 个离群/空 spot 细胞", flush=True)
-    remap = {old: i for i, old in enumerate(keep_spots)}
+    # 不丢弃任何细胞：每个细胞都分到最近 spot，所有非空 spot 都提特征。
+    # 保证 X_hipt.npy 行数与 metadata.csv 完全对齐（FeatureDataset 按行索引对齐）。
+    unique_spots = np.unique(spot_id)
+    spot_centers = centers[unique_spots]
+    remap = {old: i for i, old in enumerate(unique_spots)}
     spot_id = np.array([remap[s] for s in spot_id], dtype=np.int64)
-    spot_centers = centers[keep_spots]
-    print(f"[HIPT] {len(coords_valid)} 细胞 → {len(spot_centers)} 个 spot "
+    print(f"[HIPT] {len(coords)} 细胞 → {len(spot_centers)} 个非空 spot "
           f"(spacing={spacing_px:.0f}px, context={CONTEXT_PX}px)", flush=True)
     if args.max_spots:
         spot_centers = spot_centers[:args.max_spots]
