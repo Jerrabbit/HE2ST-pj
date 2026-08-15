@@ -1,6 +1,27 @@
-# GHIST — 可行性评估
+# GHIST — 实现状态
 
-> 文档顺序第 6 个方法。状态：**待定（需整片图+分割管线），暂未实现**。
+> 文档顺序第 6 个方法。状态：**已实现（官方 Framework 完整移植 + benchmark 统一接口），
+> 待数据管线（核分割 mask）就绪后可在我们 rep1/rep2 上运行**。
+
+## 已实现（2026-08-15）
+
+- `methods/ghist/framework.py / backbone.py / modules.py / layers.py / intialisation.py`：
+  官方 Framework（UNet 分割 + 逐核聚合 + avgexp/offset/细胞型/邻域组成多组件头）原样移植。
+- `methods/ghist/model.py`：GHISTModel benchmark 包装（input_type='patch' 整片图方法）。
+- `methods/ghist/__init__.py`：build_model + train_function（官方 9 损失 + val_PCC 早停）
+  + evaluate_slide（整片推理 → 统一指标），读 ghist_data 格式。
+- 合成数据前向验证通过（out_expr / celltype / comp 输出正确）。
+
+## 数据管线待补（在我们 rep1/rep2 上运行的前提）
+
+我们 rep1/rep2 尚无 `he_image_nuclei_seg.tif`（核分割 mask）。需先用官方
+`data_processing/` 生成（cellpose 或 Xenium 多边形 → mask + matched_nuclei）。
+远程已有 GHIST 在其它数据集上的官方运行（`/cpfs01/.../GHIST/`，PCC 0.210,
+AUROC 0.596），但那是不同数据集，不能直接对齐我们的 rep2。
+
+## 官方参考指标（其它数据集上）
+
+PCC 0.210, SPCC 0.201, Top-10 0.370, Top-50 0.473, Top-100 0.521, AUROC 0.596
 
 ## 方法概述
 
