@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
                    help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
     p.add_argument("--variant", default=None,
                    help="方法专属变体（如 pixel2gene cell/spot）")
+    p.add_argument("--d_model", type=int, default=None,
+                   help="Phoenix 专属：流 transformer 隐藏维度（默认 512）")
+    p.add_argument("--n_layers", type=int, default=None,
+                   help="Phoenix 专属：流 transformer 层数（默认 8）")
     p.add_argument("--output_dir", default="outputs")
     p.add_argument("--device", default="cuda")
     return p.parse_args()
@@ -52,6 +56,11 @@ def main() -> None:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method == "pixel2gene" and args.variant:
         build_kwargs["variant"] = args.variant
+    if args.method == "phoenix":
+        if cfg.get("d_model") or args.d_model:
+            build_kwargs["d_model"] = cfg.get("d_model") or args.d_model
+        if cfg.get("n_layers") or args.n_layers:
+            build_kwargs["n_layers"] = cfg.get("n_layers") or args.n_layers
     model = mod.build_model(num_genes=cfg.get("num_genes", 313), **build_kwargs)
     model.load_state_dict(ckpt["model"])
     if hasattr(mod, "post_load"):

@@ -88,6 +88,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     if best_state is not None:
         torch.save({"model": best_state,
                     "config": {"method": "phoenix", "num_genes": model.num_genes,
-                               "gene_norm": args.gene_norm}},
+                               "gene_norm": args.gene_norm,
+                               "d_model": model.flow.cfg.d_model,
+                               "n_layers": model.flow.cfg.n_layers}},
                    os.path.join(args.output_dir, "best.pt"))
     return history

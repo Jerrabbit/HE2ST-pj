@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
                    help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
     p.add_argument("--variant", default=None,
                    help="方法专属变体（如 pixel2gene cell/spot）")
+    p.add_argument("--d_model", type=int, default=None,
+                   help="Phoenix 专属：流 transformer 隐藏维度（默认 512）")
+    p.add_argument("--n_layers", type=int, default=None,
+                   help="Phoenix 专属：流 transformer 层数（默认 8）")
     p.add_argument("--zinb_coef", type=float, default=0.0,
                    help="Hist2ST 专属：ZINB 损失权重（loss = MSE + zinb_coef*ZINB）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
@@ -87,6 +91,11 @@ def main() -> None:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method == "pixel2gene" and args.variant:
         build_kwargs["variant"] = args.variant
+    if args.method == "phoenix":
+        if args.d_model:
+            build_kwargs["d_model"] = args.d_model
+        if args.n_layers:
+            build_kwargs["n_layers"] = args.n_layers
     model = _load_method(args.method, num_genes, **build_kwargs)
     print(f"[{args.method}] input_type={getattr(model, 'input_type', 'patch')} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)
