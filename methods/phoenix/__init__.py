@@ -15,17 +15,36 @@ def build_model(num_genes: int = 313, **kwargs):
     return Phoenix(num_genes=num_genes, **kwargs)
 
 
-def train_function(model, train_loader, valid_loader, args, stats) -> dict:
-    """Phoenix 自定义训练：重构损失 + 流匹配损失联合优化。
+EVAL_SUBSET = 25000       # 每 epoch 验证用随机子集，控制采样开销；最终测试仍全量
+EVAL_SAMPLE_STEPS = 10    # 训练期验证用较少 Euler 步（早停信号足够）；最终测试用完整 n_sample_steps
 
-    args 额外字段（通过 --kwargs 或默认）：
-        latent_dim, hidden_dim, flow_weight, n_sample_steps
+
+def train_function(model, train_loader, valid_loader, args, stats) -> dict:
+    """Phoenix 自定义训练：流匹配损失。
+
+    验证：68.8M 流 transformer 的 20 步 Euler 采样在 111k 细胞上很慢，
+    每 epoch 用 EVAL_SUBSET 随机子集评估（早停信号仍有效），最终测试用全量。
     """
+    import numpy as np
+    from torch.utils.data import DataLoader, Subset
+
     device = args.device
     model = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # 预构建验证子集（固定 indices，保证每 epoch 评估一致）
+    eval_loader = None
+    if valid_loader is not None:
+        ds = valid_loader.dataset
+        n_valid = len(ds)
+        if n_valid > EVAL_SUBSET:
+            idx = np.random.default_rng(0).choice(n_valid, EVAL_SUBSET, replace=False)
+            eval_loader = DataLoader(Subset(ds, idx), batch_size=args.batch_size,
+                                     shuffle=False)
+        else:
+            eval_loader = valid_loader
 
     best_pcc, best_state = -float("inf"), None
     no_improve = 0
@@ -46,7 +65,11 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             n += expr.size(0)
         train_loss = total / max(n, 1)
 
-        ev = evaluate(model, valid_loader, device, args.gene_norm, stats)
+        # 训练期验证用较少 Euler 步（只影响早停信号，不影响最终测试质量）
+        orig_steps = model.n_sample_steps
+        model.n_sample_steps = EVAL_SAMPLE_STEPS
+        ev = evaluate(model, eval_loader, device, args.gene_norm, stats)
+        model.n_sample_steps = orig_steps
         history.append({"epoch": epoch, "train_loss": train_loss, **ev})
         print(f"[Phoenix epoch {epoch}/{args.epochs}] loss={train_loss:.4f} "
               f"val_PCC={ev['PCC']:.4f}", flush=True)
