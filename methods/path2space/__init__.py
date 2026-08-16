@@ -20,13 +20,25 @@ import torch
 
 from common.benchmark.harness import evaluate
 from common.data.dataset import FeatureDataset
-from .model import Path2SpaceModel
+from .model import Path2SpaceMLP, Path2SpaceModel
 
-__all__ = ["Path2SpaceModel", "build_model"]
+__all__ = ["Path2SpaceModel", "Path2SpaceMLP", "build_model"]
 
 
-def build_model(num_genes: int = 313, **kwargs):
-    return Path2SpaceModel(num_genes=num_genes, **kwargs)
+def build_model(num_genes: int = 313, variant: str = "train", feature_file=None, **kwargs):
+    """统一模型工厂（scripts/train.py 调用）。
+
+    - variant='train'（默认）：**可训练版** Path2SpaceMLP —— 冻结 CTransPath
+      特征 + 训练官方 MLP 头（项目设置"编码器冻结、MLP 训练"）。特征来自
+      data_dir/X_ctranspath_ctx512.npy（Macenko + 大上下文，extract_ctranspath_context.py）。
+    - variant='frozen'：官方冻结 154-MLP 集成（推理专用，用 test_path2space*.py 评估）。
+    """
+    if variant == "frozen":
+        return Path2SpaceModel(num_genes=num_genes, **kwargs)
+    model = Path2SpaceMLP(num_genes=num_genes, **kwargs)
+    if feature_file:
+        model.feature_file = feature_file
+    return model
 
 
 def evaluate_frozen(

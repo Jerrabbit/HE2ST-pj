@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
                    help="Hist2ST 专属：bake 自蒸馏增强视图数（官方默认 5）")
     p.add_argument("--lamb", type=float, default=0.0,
                    help="Hist2ST 专属：bake 自蒸馏损失系数（官方默认 0.5）")
+    p.add_argument("--feature_file", default=None,
+                   help="特征输入方法：覆盖模型自带特征文件（如 X_ctranspath.npy）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件（每行一个基因名）")
@@ -109,7 +111,10 @@ def main() -> None:
         if args.n_layers:
             build_kwargs["n_layers"] = args.n_layers
     model = _load_method(args.method, num_genes, **build_kwargs)
+    if args.feature_file:
+        model.feature_file = args.feature_file
     print(f"[{args.method}] input_type={getattr(model, 'input_type', 'patch')} "
+          f"feature_file={getattr(model, 'feature_file', None)} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)
 
     train_ds = _make_dataset(model, args.train_dir, gene_list, args.gene_norm,

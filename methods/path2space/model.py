@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-__all__ = ["MLP_regression_relu_two", "MLPEnsemble", "Path2SpaceModel"]
+__all__ = ["MLP_regression_relu_two", "MLPEnsemble", "Path2SpaceModel", "Path2SpaceMLP"]
 
 
 class MLP_regression_relu_two(nn.Module):
@@ -164,6 +164,49 @@ class Path2SpaceModel(nn.Module):
         full = np.zeros((B, self.num_genes), dtype=np.float32)
         full[:, self.out_cols] = pred                        # 散射回 313 列位置
         return torch.as_tensor(full, dtype=torch.float32, device=x.device)
+
+
+class Path2SpaceMLP(nn.Module):
+    """Path2Space 官方 MLP 头（**可训练版**）：冻结 CTransPath 特征 + 训练 MLP。
+
+    项目设置："编码器冻结、接的 MLP 训练"。CTransPath（官方 ctranspath.pth）
+    特征冻结，仅训练 MLP 头。架构对齐官方 `MLP_regression_relu_two`：
+        Linear(768→768) → ReLU → Dropout(0.2) → Linear(768→num_genes) [→ ReLU]
+    官方输出 14068 基因；此处 num_genes=313 公共基因（与基准一致）。
+
+    说明：官方最后一层 ReLU 是对 log1p（非负）目标的约束；统一协议默认用
+    log1p_zscore（可负）目标，故 `final_relu=False`（去掉输出 ReLU）以适配
+    z-score 空间。若保留 ReLU，需配非负目标（如 `--gene_norm log1p_norm_total`）。
+
+    特征来自 `extract_ctranspath_context.py` 生成的 Macenko+上下文特征
+    （默认 `X_ctranspath_ctx512.npy`，768 维/细胞）。
+    """
+
+    input_type = "feature"
+    feature_file = "X_ctranspath_ctx512.npy"
+
+    def __init__(
+        self,
+        num_genes: int,
+        hidden_dim: int = 768,
+        dropout: float = 0.2,
+        final_relu: bool = False,
+    ):
+        super().__init__()
+        self.num_genes = int(num_genes)
+        self.layer0 = nn.Sequential(
+            nn.Linear(768, int(hidden_dim)),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        out = [nn.Linear(int(hidden_dim), self.num_genes)]
+        if final_relu:
+            out.append(nn.ReLU())
+        self.layer1 = nn.Sequential(*out)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """冻结 CTransPath 特征 (B, 768) → (B, num_genes) 归一化表达预测。"""
+        return self.layer1(self.layer0(x))
 
 
 def _resolve_out_indices(
