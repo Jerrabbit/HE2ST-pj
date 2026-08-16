@@ -107,7 +107,7 @@ def main() -> None:
         build_kwargs["finetune"] = False
     if args.method == "bleep" and args.pretrained_weights:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
-    if args.method in ("pixel2gene", "uni2_mlp") and args.variant:
+    if args.method in ("pixel2gene", "uni2_mlp", "squall") and args.variant:
         build_kwargs["variant"] = args.variant
     if args.method == "phoenix":
         if args.d_model:

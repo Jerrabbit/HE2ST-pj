@@ -51,6 +51,7 @@ class UNI2FeatureExtractor:
         if missing or unexpected:
             raise RuntimeError(f"UNI2 权重加载不完整: missing={missing}, unexpected={unexpected}")
         self.model = model.eval().to(device)
+        self.n_prefix = int(getattr(model, "num_prefix_tokens", 1))  # CLS + register 前缀 token 数
 
     @torch.no_grad()
     def extract(self, patches: np.ndarray, batch_size: int = 256) -> np.ndarray:
@@ -68,6 +69,42 @@ class UNI2FeatureExtractor:
             x = self._preprocess(batch)
             feats.append(self.model(x).cpu().numpy())
         return np.concatenate(feats, axis=0)
+
+    @torch.no_grad()
+    def extract_tokens(self, patches: np.ndarray, batch_size: int = 128) -> np.ndarray:
+        """提取全部 token 嵌入，供 Local 分支**单次 forward** 复用。
+
+        与 `extract()`（只取 CLS）不同，本方法返回完整 token 序列
+        `(B, T, 1536)`（T = 1 CLS + 8 register + 16×16 patch = 265）。
+        patch14 无重叠，中心裁剪 l2=14k 对应的正是 patch 网格中心 k×k 子块，
+        可直接从同一次 forward 的结果切出，无需二次 forward。
+
+        参数：
+            patches: (B, H, W, 3) uint8 图像块数组，或 (B, 3, 224, 224) 归一化张量
+            batch_size: 批大小
+        返回：
+            (B, T, 1536) token 序列
+        """
+        feats = []
+        for i in range(0, len(patches), batch_size):
+            x = self._preprocess(patches[i:i + batch_size])
+            feats.append(self.model.forward_features(x).cpu().numpy())
+        return np.concatenate(feats, axis=0)
+
+    def center_patch_tokens(self, tokens: np.ndarray, k: int) -> np.ndarray:
+        """从全 token 序列提取中心 k×k patch token 块（复用同一次 forward）。
+
+        tokens: (B, T, 1536)。返回 (B, k*k, 1536)，k 为 patch 数（l2 = 14k，k≤8）。
+        中心块对齐约定：start = (16-k)//2（偶数 k 时与像素裁剪精确一致）。
+        """
+        if tokens.shape[1] < self.n_prefix + 256:
+            raise ValueError(
+                f"token 序列不完整: {tokens.shape[1]} < {self.n_prefix}+256 "
+                f"（需 CLS+register+patch 全序列，用 extract_tokens() 提取）")
+        pt = tokens[:, self.n_prefix:].reshape(tokens.shape[0], 16, 16, -1)
+        start = (16 - k) // 2
+        blk = pt[:, start:start + k, start:start + k]  # (B, k, k, 1536)
+        return blk.reshape(blk.shape[0], k * k, blk.shape[-1])
 
     def _preprocess(self, patches: np.ndarray) -> torch.Tensor:
         """图像块 → (B,3,224,224) 归一化张量。"""

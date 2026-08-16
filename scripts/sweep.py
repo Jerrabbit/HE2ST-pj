@@ -2,21 +2,24 @@
 
 流程（每种泛化情形分别进行）：
     1. --stage op1（只测 Global）：sweep 边长 l1（从 >224 逐步缩小，小步长多取值），
-       每 l1 先提取 Global 特征再训练 30 epoch 取 best val_PCC，绘 PCC–l1 曲线，
-       确定最佳区间，选 best l1。
-    2. --stage op2（固定 best l1，Global+Local）：sweep 中心裁剪边长 l2 = 4..8×14，
-       每 l2 提取 Local 特征 + 30 epoch 训练取 best val_PCC，选最佳 l2。
+       每 l1 先提取 Global 特征（训练+验证两切片）再训练 30 epoch 取 best val_PCC，
+       绘 PCC–l1 曲线，确定最佳区间，选 best l1。
+    2. --stage op2（固定 best l1，Global+Local）：sweep 中心裁剪边长 l2 = 4..8×14。
+       Local 特征**复用 op1 同一次 forward 的 patch token**（单次提取产出全部 l2 文件），
+       每 l2 训练 30 epoch 取 best val_PCC，选最佳 l2。
     3. 确定 best l1+l2 后，单独跑 50 epoch 完整训练（train.py --variant local_global）。
 
 每个配置：30 epoch（调参），early stop 取 best val_PCC（来自 history.json）。
 
 用法（远程 myenv1）：
     # op1：l1 从 448 缩到 112，步长 28
-    python scripts/sweep.py --stage op1 --train_dir data/rep1 --valid_dir data/rep2 \
+    python scripts/sweep.py --stage op1 --train_rep 1 --valid_rep 2 \
+        --train_dir data/rep1 --valid_dir data/rep2 \
         --l1_values 448 420 392 364 336 308 280 252 224 196 168 140 112 \
         --out_dir outputs/sweep_op1
     # op2：固定 best l1，l2 = 4..8 × 14
-    python scripts/sweep.py --stage op2 --l1 336 --train_dir data/rep1 --valid_dir data/rep2 \
+    python scripts/sweep.py --stage op2 --l1 336 --train_rep 1 --valid_rep 2 \
+        --train_dir data/rep1 --valid_dir data/rep2 \
         --l2_values 56 70 84 98 112 --out_dir outputs/sweep_op2
 """
 from __future__ import annotations
@@ -49,17 +52,33 @@ def _best_val_pcc(out_dir: str) -> float:
     return max(pccs) if pccs else float("nan")
 
 
+def _extract_global(args, rep: int, data_dir: str, l1: int) -> None:
+    """Global 特征：未存在则提取（rep 决定用哪张切片图，两切片都需特征）。"""
+    feat = os.path.join(data_dir, f"X_uni2_g{l1}.npy")
+    if not os.path.exists(feat):
+        _run([sys.executable, "scripts/extract_local_global.py", "--rep", str(rep),
+              "--stage", "global", "--l1", str(l1),
+              "--output", feat, "--device", "cuda"])
+
+
+def _extract_local(args, rep: int, data_dir: str, l1: int, l2_values: list[int]) -> None:
+    """Local 特征：单次 forward（token 复用）一次产出全部 l2 文件，未存在才提取。"""
+    missing = [l2 for l2 in l2_values
+               if not os.path.exists(os.path.join(data_dir, f"X_uni2_l{l2}.npy"))]
+    if missing:
+        _run([sys.executable, "scripts/extract_local_global.py", "--rep", str(rep),
+              "--stage", "local", "--l1", str(l1),
+              "--l2_list"] + [str(x) for x in l2_values] + ["--device", "cuda"])
+
+
 def stage_op1(args) -> tuple[int, float]:
-    """只测 Global（op1 放缩中心）：每个 l1 提取特征 + 30ep 训练，绘 PCC–l1 曲线。"""
+    """只测 Global（op1 放缩中心）：每 l1 提取特征（训练+验证两切片）+ 30ep 训练，绘 PCC–l1 曲线。"""
     l1_values = args.l1_values or DEFAULT_L1_VALUES
     os.makedirs(args.out_dir, exist_ok=True)
     results = {}
     for l1 in l1_values:
-        feat = os.path.join(args.train_dir, f"X_uni2_g{l1}.npy")
-        if not os.path.exists(feat):
-            _run([sys.executable, "scripts/extract_local_global.py", "--rep", args.rep,
-                  "--stage", "global", "--l1", str(l1),
-                  "--output", feat, "--device", "cuda"])
+        _extract_global(args, args.train_rep, args.train_dir, l1)
+        _extract_global(args, args.valid_rep, args.valid_dir, l1)
         out = os.path.join(args.out_dir, f"g{l1}")
         _run([sys.executable, "scripts/train.py", "--method", "uni2_mlp",
               "--variant", "global_only", "--feature_file", f"X_uni2_g{l1}.npy",
@@ -75,18 +94,19 @@ def stage_op1(args) -> tuple[int, float]:
 
 
 def stage_op2(args) -> tuple[int, float]:
-    """固定 best l1，Global+Local：每个 l2 提取 Local 特征 + 30ep 训练。"""
+    """固定 best l1，Global+Local：单次 forward 提取 Local 特征（两切片）+ 每 l2 30ep 训练。"""
     if not args.l1:
         raise SystemExit("op2 阶段必须 --l1 指定 best l1")
     l2_values = args.l2_values or DEFAULT_L2_VALUES
+    # 确保 Global 特征存在（best l1 通常来自 op1 sweep；独立跑 op2 时补）
+    _extract_global(args, args.train_rep, args.train_dir, args.l1)
+    _extract_global(args, args.valid_rep, args.valid_dir, args.l1)
+    # Local：token 复用，两切片各一次 forward 即产出全部 l2 文件
+    _extract_local(args, args.train_rep, args.train_dir, args.l1, l2_values)
+    _extract_local(args, args.valid_rep, args.valid_dir, args.l1, l2_values)
     os.makedirs(args.out_dir, exist_ok=True)
     results = {}
     for l2 in l2_values:
-        feat = os.path.join(args.train_dir, f"X_uni2_l{l2}.npy")
-        if not os.path.exists(feat):
-            _run([sys.executable, "scripts/extract_local_global.py", "--rep", args.rep,
-                  "--stage", "local", "--l1", str(args.l1), "--l2", str(l2),
-                  "--output", feat, "--device", "cuda"])
         out = os.path.join(args.out_dir, f"l{l2}")
         _run([sys.executable, "scripts/train.py", "--method", "uni2_mlp",
               "--variant", "local_global",
@@ -132,8 +152,10 @@ def _save_results(args, stage: str, results: dict) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Local-Global 两段调参 sweep")
     p.add_argument("--stage", choices=["op1", "op2"], required=True)
-    p.add_argument("--rep", type=int, choices=[1, 2], default=2,
-                   help="特征提取用切片（特征文件写到 train_dir）")
+    p.add_argument("--train_rep", type=int, choices=[1, 2], default=1,
+                   help="训练切片编号（特征提取读该切片图）")
+    p.add_argument("--valid_rep", type=int, choices=[1, 2], default=2,
+                   help="验证切片编号（特征提取读该切片图）")
     p.add_argument("--train_dir", required=True, help="训练集数据目录")
     p.add_argument("--valid_dir", required=True, help="验证集数据目录")
     p.add_argument("--l1", type=int, help="op2 阶段固定的 best l1")

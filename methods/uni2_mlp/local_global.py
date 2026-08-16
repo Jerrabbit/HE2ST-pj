@@ -1,17 +1,22 @@
 """Local-Global Dual-scale Representation（UNI2+MLP 基线的改进）。
 
-架构：`concat[UNI2(op1 放缩中心), UNI2(op2 中心裁剪)] → 统一 MLPHead`
+架构：`concat[UNI2(op1 放缩中心) CLS, UNI2 中心 patch token 复用(op2)] → 统一 MLPHead`
 
 - **op1（Global branch）**：以目标细胞为中心取 l1×l1 图像块，resize 到 224×224，
-  用 UNI2 提特征，负责 tissue architecture、microenvironment。
-- **op2（Local branch）**：在 op1 得到的 224×224 块上中心裁剪 l2×l2 小区域
-  （l2 为 **14 的倍数**以适配 UNI2 patch 网格），resize 224 后用 UNI2 提特征，
-  与整块特征 concat，负责 morphology、nucleus、cell neighborhood。
+  用 UNI2 提 [CLS] 特征，负责 tissue architecture、microenvironment。
+- **op2（Local branch）**：**复用 op1 同一次 forward 的 patch token 网格**——
+  UNI2 patch14 无重叠，224×224 一次 forward 出 16×16=256 个 patch token；
+  中心裁剪 l2×l2（l2=14k）对应正是该网格中心 k×k 子块，取子块 token 的
+  mean-pool 作为 Local 特征，负责 morphology、nucleus、cell neighborhood。
+
+**单次 forward 约束**：Local 分支**不再二次 forward**（不做"裁剪→resize→再提"），
+而是从 Global 的 token 序列直接切出中心子块——op2 sweep 的全部 l2 值（56..112）
+都免费复用同一份 token，成本为零。
 
 实现方式：UNI2 为冻结编码器（预提取特征文件），模型只做 `concat → MLPHead`。
-Global / Local 特征由 `scripts/extract_local_global.py` 预提取：
-    - Global：`X_uni2_g{l1}.npy`（l1×l1 块 → resize 224 → UNI2，1536 维/细胞）
-    - Local：`X_uni2_l{l2}.npy`（l1×l1 块 → resize 224 → 中心裁剪 l2 → resize 224 → UNI2）
+特征由 `scripts/extract_local_global.py` 预提取（`--stage local` 单次产出全部 l2 文件）：
+    - Global：`X_uni2_g{l1}.npy`（l1×l1 块 → resize 224 → UNI2 [CLS]，1536 维/细胞）
+    - Local：`X_uni2_l{l2}.npy`（同一 forward 中心 k×k patch token mean-pool，1536 维/细胞）
 模型输入 = concat[g, l]（3072 维）或仅其一（消融，1536 维）。
 
 调参流程（每种泛化情形分别进行）：

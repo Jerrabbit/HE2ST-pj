@@ -58,6 +58,8 @@ def main() -> None:
     p.add_argument("--device", default="cuda")
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument("--max_cells", type=int, default=None, help="调试：限制细胞数")
+    p.add_argument("--save_tokens", action="store_true",
+                   help="保存冻结编码器 token 嵌入 (N,196,1024) 供'训练解码器头'；否则保存 mean-pool (N,1024)")
     args = p.parse_args()
 
     model = load_squall(args.ckpt, args.device)
@@ -68,7 +70,9 @@ def main() -> None:
     n = len(meta)
     print(f"[SQUALL] 提取 {n} 个细胞 ...", flush=True)
 
-    feats = np.zeros((n, FEAT_DIM), dtype=np.float32)
+    n_tokens = 196  # 224/16 = 14×14 = 196 个 token
+    feats = np.zeros((n, n_tokens, FEAT_DIM), dtype=np.float32) if args.save_tokens \
+        else np.zeros((n, FEAT_DIM), dtype=np.float32)
     for i in range(0, n, args.batch_size):
         j0, j1 = i, min(i + args.batch_size, n)
         B = j1 - j0
@@ -83,11 +87,11 @@ def main() -> None:
         res = torch.full((B, 1), RES, dtype=torch.float32, device=args.device)
         with torch.no_grad():
             z = model.forward_rgb(x, res)                           # (B,196,1024)
-            feats[j0:j1] = z.mean(1).cpu().numpy()
+            feats[j0:j1] = z.cpu().numpy() if args.save_tokens else z.mean(1).cpu().numpy()
         if ((i // args.batch_size) % 100) == 0:
             print(f"  {j1}/{n}", flush=True)
 
-    out = os.path.join(data_dir, "X_squall.npy")
+    out = os.path.join(data_dir, "X_squall_tokens.npy" if args.save_tokens else "X_squall.npy")
     np.save(out, feats)
     print(f"[SQUALL] 已保存 {out} 形状 {feats.shape}", flush=True)
 
