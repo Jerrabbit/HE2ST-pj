@@ -100,18 +100,19 @@ python -m pytest tests/ -v
 | 方法 | PCC | 说明 |
 |---|---|---|
 | ST-Net（微调 DenseNet） | 0.3619 | 优势几乎全来自编码器微调（冻结后 0.2386） |
-| BLEEP（微调 resnet50） | ~0.32* | 微调增益类似（冻结后 0.2131）；*为修正 --img_size 224 后的预期值 |
+| BLEEP（微调 resnet50） | 0.3235 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
 
 ## 训练中（2026-08-17）
 
 - **Hist2ST 官方配置重训**（`outputs/bench_hist2st_official`）：`--epochs 100 --lr 1e-5
-  --zinb 0.25 --zinb_coef 0.25 --bake 5 --lamb 0.5`，约 **epoch 53/100**，val_PCC ~0.19。
+  --zinb 0.25 --zinb_coef 0.25 --bake 5 --lamb 0.5`，约 **epoch 59/100**，val_PCC ~0.19。
   官方配置（低 lr + ZINB + bake 自蒸馏）下有真实学习，验证统一协议 null 的根因是协议
   而非架构；预计最终仍远低于 UNI2 系方法。
-- **BLEEP 全量测试**（非冻结，`--img_size 224` 修正）：运行中（111k cells 评估，节点
-  负载高较慢），回答"0.26 vs 0.32"之谜（旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug）。
+- ~~BLEEP 全量测试~~ ✅ 完成：PCC **0.3235**（`--img_size 224` 修正，见参考结果表）。
 - ~~Path2Space 正式 rep1→rep2~~ ✅ 完成：PCC **0.2780**（见上表与重训章节）。
-  `Path2SpaceMLP`。
+- **SQUALL 0-1 输入复核**（运行中）：rep1+rep2 已用 `/255.0` 正确输入重提取
+  （`X_squall.npy`，0-255→0-1），正在重训统一 MLP（`outputs/bench_squall_01`）。
+  早期 epoch val_PCC 已 ~0.27，显著高于旧 0-255 特征的 0.2116。
 
 ## 关键结论信号
 
