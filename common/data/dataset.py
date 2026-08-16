@@ -123,7 +123,7 @@ class FeatureDataset(Dataset):
     def __init__(
         self,
         data_dir: str,
-        feature_path: str | None = None,
+        feature_path: str | list[str] | None = None,
         gene_list: list[str] | None = None,
         gene_norm: str = "log1p_zscore",
         ref_stats: dict | None = None,
@@ -132,12 +132,19 @@ class FeatureDataset(Dataset):
         super().__init__()
         self.data_dir = data_dir
 
-        feature_path = feature_path or os.path.join(data_dir, "X_uni2.npy")
-        if os.path.dirname(feature_path) == "":  # 裸文件名 → 视为相对 data_dir
-            feature_path = os.path.join(data_dir, feature_path)
-        if not os.path.exists(feature_path):
-            raise FileNotFoundError(f"特征文件不存在: {feature_path}")
-        self.features = np.load(feature_path).astype(np.float32)  # (N, D)
+        # 支持多特征文件（Local+Global）：str 或 list[str]，按序加载并沿最后一维 concat
+        if feature_path is None:
+            feature_path = os.path.join(data_dir, "X_uni2.npy")
+        if isinstance(feature_path, str):
+            feature_path = [feature_path]
+        feats = []
+        for fp in feature_path:
+            if os.path.dirname(fp) == "":  # 裸文件名 → 视为相对 data_dir
+                fp = os.path.join(data_dir, fp)
+            if not os.path.exists(fp):
+                raise FileNotFoundError(f"特征文件不存在: {fp}")
+            feats.append(np.load(fp).astype(np.float32))  # (N, D_i)
+        self.features = np.concatenate(feats, axis=1)      # (N, sum D_i)
 
         self.metadata = pd.read_csv(os.path.join(data_dir, "metadata.csv"))
         if debug and len(self.metadata) > 100:

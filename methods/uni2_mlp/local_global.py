@@ -1,32 +1,73 @@
 """Local-Global Dual-scale Representation（UNI2+MLP 基线的改进）。
 
-架构：concat[UNI2(op1 放缩中心), UNI2(op2 中心裁剪)] → 统一 MLPHead
+架构：`concat[UNI2(op1 放缩中心), UNI2(op2 中心裁剪)] → 统一 MLPHead`
 
-- op1（Global branch）：以目标细胞为中心取不同尺寸图像块，resize 到 224×224，
-  负责 tissue architecture、microenvironment。
-- op2（Local branch）：在 op1 得到的 224×224 块上中心裁剪小区域
-  （边长须为 14 的倍数以适配 UNI2），该区域 token 与整块 token 做 concat，
-  负责 morphology、nucleus、cell neighborhood。
+- **op1（Global branch）**：以目标细胞为中心取 l1×l1 图像块，resize 到 224×224，
+  用 UNI2 提特征，负责 tissue architecture、microenvironment。
+- **op2（Local branch）**：在 op1 得到的 224×224 块上中心裁剪 l2×l2 小区域
+  （l2 为 **14 的倍数**以适配 UNI2 patch 网格），resize 224 后用 UNI2 提特征，
+  与整块特征 concat，负责 morphology、nucleus、cell neighborhood。
+
+实现方式：UNI2 为冻结编码器（预提取特征文件），模型只做 `concat → MLPHead`。
+Global / Local 特征由 `scripts/extract_local_global.py` 预提取：
+    - Global：`X_uni2_g{l1}.npy`（l1×l1 块 → resize 224 → UNI2，1536 维/细胞）
+    - Local：`X_uni2_l{l2}.npy`（l1×l1 块 → resize 224 → 中心裁剪 l2 → resize 224 → UNI2）
+模型输入 = concat[g, l]（3072 维）或仅其一（消融，1536 维）。
 
 调参流程（每种泛化情形分别进行）：
-    1. op1 sweep（只测 op1）→ 从 >224 边长逐步缩小，绘 PCC–c1 曲线，选 best c1
-    2. op2 sweep（op1+op2，固定 best c1）→ 尝试不同 c2（14 的倍数），选最佳 PCC 对应 c2
-    3. 最终训练：best c1、c2 组合，报告全部指标
+    1. **op1 sweep**（只测 op1 / Global）→ 从 >224 边长逐步缩小（小步长，多取值），
+       30 epoch 取 best val_PCC，绘 PCC–l1 曲线，选 best l1。
+    2. **op2 sweep**（op1+op2，固定 best l1）→ 尝试 l2 = 4..8 × 14，选最佳 PCC 对应 l2。
+    3. **最终训练**：best l1 + best l2，50 epoch 报告全部指标。
+    4. **消融**：只用 Local、只用 Global、完整 Local+Global。
 """
 from __future__ import annotations
 
+import torch
+import torch.nn as nn
 
-class LocalGlobalModule:
-    """Local-Global 双尺度特征：concat[UNI2(op1 全局), UNI2(op2 局部)] → MLPHead。
+from common.models.mlp_head import MLPHead
+
+FEATURE_DIM = 1536  # UNI2 [CLS] token 维度
+
+
+class LocalGlobalMLP(nn.Module):
+    """Local-Global 双尺度特征 + 统一 MLP 头（可训练）。
+
+    特征文件由 `feature_files` 指定（预提取，冻结 UNI2）：
+        - Local+Global（完整）：[X_uni2_g{l1}.npy, X_uni2_l{l2}.npy]，输入 3072 维
+        - Global-only（消融）：[X_uni2_g{l1}.npy]，输入 1536 维
+        - Local-only（消融）：[X_uni2_l{l2}.npy]，输入 1536 维
 
     参数：
         num_genes: 预测的公共基因数
-        c1: op1 取块边长（放缩中心，≥224，由 op1 sweep 决定）
-        c2: op2 中心裁剪边长（须为 14 的倍数，由 op2 sweep 决定）
+        feature_files: 特征文件列表（相对 data_dir 或绝对路径）
+        in_dim: 输入特征维数（1536×文件数）
+        mlp_hidden_dims / dropout: 统一 MLPHead 参数（与其它方法一致）
+        l1 / l2: 记录调参用的块/裁剪边长（仅作配置记录）
     """
 
-    def __init__(self, num_genes: int, c1: int = 336, c2: int = 224):
-        self.num_genes = num_genes
-        self.c1 = c1
-        self.c2 = c2
-        raise NotImplementedError("待实现：op1 放缩中心 + op2 中心裁剪 + token concat + 统一 MLPHead")
+    input_type = "feature"
+    feature_files = ["X_uni2_g512.npy", "X_uni2_l56.npy"]
+
+    def __init__(
+        self,
+        num_genes: int,
+        feature_files: list[str] | None = None,
+        in_dim: int = FEATURE_DIM * 2,
+        mlp_hidden_dims: tuple[int, int] = (512, 256),
+        dropout: float = 0.1,
+        l1: int = 512,
+        l2: int = 56,
+    ):
+        super().__init__()
+        self.num_genes = int(num_genes)
+        self.l1 = int(l1)
+        self.l2 = int(l2)
+        if feature_files:
+            self.feature_files = list(feature_files)
+        self.head = MLPHead(in_dim, list(mlp_hidden_dims), self.num_genes, dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """concat[Global, Local] 特征 (B, 1536*n_files) → (B, num_genes) 归一化表达预测。"""
+        return self.head(x)

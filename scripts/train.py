@@ -54,7 +54,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lamb", type=float, default=0.0,
                    help="Hist2ST 专属：bake 自蒸馏损失系数（官方默认 0.5）")
     p.add_argument("--feature_file", default=None,
-                   help="特征输入方法：覆盖模型自带特征文件（如 X_ctranspath.npy）")
+                   help="特征输入方法：覆盖模型自带特征文件（逗号分隔多个，如 "
+                        "X_uni2_g512.npy,X_uni2_l56.npy 用于 Local+Global）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件（每行一个基因名）")
@@ -67,8 +68,11 @@ def parse_args() -> argparse.Namespace:
 
 def _make_dataset(model, data_dir, gene_list, gene_norm, ref_stats, img_size, debug):
     if getattr(model, "input_type", "patch") == "feature":
-        feature_file = getattr(model, "feature_file", None)  # 方法自带特征文件（如 X_ctranspath.npy）
-        return FeatureDataset(data_dir, feature_path=feature_file, gene_list=gene_list,
+        # 特征文件：优先 feature_files（list，Local+Global 多文件），回退 feature_file（str）
+        feature_files = getattr(model, "feature_files", None)
+        if feature_files is None and getattr(model, "feature_file", None):
+            feature_files = model.feature_file
+        return FeatureDataset(data_dir, feature_path=feature_files, gene_list=gene_list,
                               gene_norm=gene_norm, ref_stats=ref_stats, debug=debug)
     return HESTDataset(data_dir, gene_list=gene_list, gene_norm=gene_norm,
                        ref_stats=ref_stats, img_size=img_size, debug=debug)
@@ -112,9 +116,11 @@ def main() -> None:
             build_kwargs["n_layers"] = args.n_layers
     model = _load_method(args.method, num_genes, **build_kwargs)
     if args.feature_file:
-        model.feature_file = args.feature_file
+        # 逗号分隔 → 多特征文件（Local+Global）；单文件也归一成 list
+        files = [f.strip() for f in args.feature_file.split(",") if f.strip()]
+        model.feature_files = files
     print(f"[{args.method}] input_type={getattr(model, 'input_type', 'patch')} "
-          f"feature_file={getattr(model, 'feature_file', None)} "
+          f"feature_files={getattr(model, 'feature_files', getattr(model, 'feature_file', None))} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)
 
     train_ds = _make_dataset(model, args.train_dir, gene_list, args.gene_norm,
