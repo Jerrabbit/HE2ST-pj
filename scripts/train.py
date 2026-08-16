@@ -46,6 +46,13 @@ def parse_args() -> argparse.Namespace:
                    help="Phoenix 专属：流 transformer 层数（默认 8）")
     p.add_argument("--zinb_coef", type=float, default=0.0,
                    help="Hist2ST 专属：ZINB 损失权重（loss = MSE + zinb_coef*ZINB）")
+    p.add_argument("--no_finetune", action="store_true",
+                   help="ST-Net 专属：冻结 DenseNet 编码器（只训 Linear 头），"
+                        "与冻结特征的 UNI2+MLP 公平对比")
+    p.add_argument("--bake", type=int, default=0,
+                   help="Hist2ST 专属：bake 自蒸馏增强视图数（官方默认 5）")
+    p.add_argument("--lamb", type=float, default=0.0,
+                   help="Hist2ST 专属：bake 自蒸馏损失系数（官方默认 0.5）")
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件（每行一个基因名）")
@@ -87,9 +94,14 @@ def main() -> None:
 
     # 方法专属模型参数（其它方法 build_model 不接受这些 kwargs）
     build_kwargs = {"zinb": args.zinb} if args.method == "hist2st" else {}
+    if args.method == "hist2st":
+        build_kwargs["bake"] = args.bake
+        build_kwargs["lamb"] = args.lamb
+    if args.method in ("st_net", "bleep") and args.no_finetune:
+        build_kwargs["finetune"] = False
     if args.method == "bleep" and args.pretrained_weights:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
-    if args.method == "pixel2gene" and args.variant:
+    if args.method in ("pixel2gene", "uni2_mlp") and args.variant:
         build_kwargs["variant"] = args.variant
     if args.method == "phoenix":
         if args.d_model:

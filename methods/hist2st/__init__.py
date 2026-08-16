@@ -316,6 +316,12 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             if model.core.zinb > 0 and zinb_coef > 0:
                 zinb_loss = _zinb_loss_from_roi(expr_raw[roi], extra, stats, device)
                 loss = loss + model.core.zinb * zinb_loss
+            if model.core.bake > 0:
+                # 官方 bake 自蒸馏：增强视图聚合预测 → 原预测（HIST2ST.py:182-186）
+                bake_x = model.core.aug(sub_patches, sub_centers, sub_adj)
+                new_pred = model.core.distillation(bake_x)
+                bake_loss = F.mse_loss(new_pred, pred)
+                loss = loss + model.core.lamb * bake_loss
             loss.backward()
             optimizer.step()
             total += loss.item() * sub_expr.size(0)

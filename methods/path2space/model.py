@@ -138,26 +138,32 @@ class Path2SpaceModel(nn.Module):
             ensemble_dir, n_inputs=n_inputs, n_genes=n_genes_all,
             device=self.device, n_ik_folds=n_ik_folds, n_il_folds=n_il_folds,
         )
-        # 公共基因 → 14068 输出基因的索引映射
-        self.out_indices = _resolve_out_indices(
+        # 公共基因 → 14068 输出基因的索引映射（部分覆盖：仅含可预测基因）
+        self.out_indices, self.out_cols = _resolve_out_indices(
             genes_txt, gene_names, n_genes_all
         )
         if len(self.out_indices) < num_genes:
-            raise ValueError(
-                f"公共基因 {num_genes} 个，仅 {len(self.out_indices)} 个在 "
-                f"Path2Space 的 14068 基因中，无法完整映射"
-            )
+            print(f"[Path2Space] 警告: {num_genes} 公共基因中仅 {len(self.out_indices)} 个"
+                  f"在官方 14068 基因表中，其余 {num_genes - len(self.out_indices)} "
+                  f"个无法预测（输出填 0，不贡献指标）", flush=True)
         self.output_is_log1p = output_is_log1p
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """CTransPath 特征 (B, 768) → (B, G) raw counts 语义预测。"""
+        """CTransPath 特征 (B, 768) → (B, G) raw counts 语义预测。
+
+        部分覆盖：未覆盖基因输出填 0（constant → 该基因 PCC 为 NaN 被跳过，
+        对 Top-k 无贡献），仅在可预测的公共基因子集上体现 Path2Space 性能。
+        """
         feat = x.cpu().numpy() if torch.is_tensor(x) else x
         pred = self.ensemble.predict(feat)                  # (B, 14068) log1p
-        pred = pred[:, self.out_indices]                     # (B, G)
+        pred = pred[:, self.out_indices]                     # (B, covered)
         if self.output_is_log1p:
             pred = np.expm1(np.clip(pred, -30.0, 30.0))      # → raw counts
-        return torch.as_tensor(pred, dtype=torch.float32, device=x.device)
+        B = feat.shape[0] if isinstance(feat, np.ndarray) else feat.size(0)
+        full = np.zeros((B, self.num_genes), dtype=np.float32)
+        full[:, self.out_cols] = pred                        # 散射回 313 列位置
+        return torch.as_tensor(full, dtype=torch.float32, device=x.device)
 
 
 def _resolve_out_indices(
@@ -180,9 +186,13 @@ def _resolve_out_indices(
     else:
         raise ValueError("需提供 gene_names（本仓库公共基因名）")
     name_to_idx = {g: i for i, g in enumerate(all_genes)}
-    missing = [g for g in common if g not in name_to_idx]
-    if missing:
-        raise ValueError(
-            f"{len(missing)} 个公共基因不在 Path2Space 基因表中，例如: {missing[:5]}"
-        )
-    return np.array([name_to_idx[g] for g in common], dtype=np.int64)
+    # 部分覆盖：只保留在官方基因表中的公共基因（缺失的由 Path2SpaceModel 填 0）。
+    # 返回双重映射：
+    #   out_indices: 每个可预测公共基因在官方 14068 输出中的下标（用于从 pred 选列）
+    #   out_cols:    每个可预测公共基因在 313 公共基因 full 输出中的列位置（用于散射）
+    covered = [(col, name_to_idx[g]) for col, g in enumerate(common) if g in name_to_idx]
+    if not covered:
+        raise ValueError("无任何公共基因在 Path2Space 基因表中")
+    out_indices = np.array([i for _, i in covered], dtype=np.int64)
+    out_cols = np.array([c for c, _ in covered], dtype=np.int64)
+    return out_indices, out_cols

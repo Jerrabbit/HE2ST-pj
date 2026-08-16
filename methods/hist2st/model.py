@@ -33,6 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
+from torchvision import transforms as tv_transforms
 
 __all__ = [
     "SelectItem",
@@ -411,6 +412,12 @@ class Hist2ST(nn.Module):
                 nn.ReLU(),
                 nn.Linear(dim, 1),
             )
+            # 官方 bake 自蒸馏的增强（HIST2ST.py:132-135 原样）
+            self.tf = tv_transforms.Compose([
+                tv_transforms.RandomGrayscale(0.1),
+                tv_transforms.RandomRotation(90),
+                tv_transforms.RandomHorizontalFlip(0.2),
+            ])
         self.gene_head = nn.Sequential(
             nn.LayerNorm(dim),
             nn.Linear(dim, n_genes),
@@ -439,6 +446,24 @@ class Hist2ST(nn.Module):
         if aug:
             h = self.coef(h)
         return x, extra, h
+
+    def aug(self, patch, center, adj):
+        """bake 个增强视图的自蒸馏输入（官方 HIST2ST.py:160-166 原样）。"""
+        bake_x = []
+        for _ in range(self.bake):
+            new_patch = self.tf(patch.squeeze(0)).unsqueeze(0)
+            x, _extra, h = self(new_patch, center, adj, True)
+            bake_x.append((x.unsqueeze(0), h.unsqueeze(0)))
+        return bake_x
+
+    def distillation(self, bake_x):
+        """softmax 加权聚合增强视图（官方 HIST2ST.py:167-173 原样）。"""
+        new_x, coef = zip(*bake_x)
+        coef = torch.cat(coef, 0)
+        new_x = torch.cat(new_x, 0)
+        coef = F.softmax(coef, dim=0)
+        new_x = (new_x * coef).sum(0)
+        return new_x
 
 
 class Hist2STModel(nn.Module):

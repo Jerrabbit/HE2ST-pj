@@ -50,14 +50,32 @@ class ProjectionHead(nn.Module):
 
 
 class ImageEncoder(nn.Module):
-    """timm resnet50，avg-pool、无分类头，输出 2048 维。"""
+    """timm resnet50，avg-pool、无分类头，输出 2048 维。
 
-    def __init__(self, model_name: str = "resnet50", pretrained: bool = True):
+    权重来源：timm 默认从 HuggingFace 下载（远程无网不可用）。传
+    `pretrained_weights`（torchvision resnet50-0676ba61.pth 路径）时改为
+    加载本地权重文件（strict=False，架构同为标准 ResNet50，只忽略 fc 层）。
+    """
+
+    def __init__(self, model_name: str = "resnet50", pretrained: bool = True,
+                 pretrained_weights: str | None = None):
         super().__init__()
         import timm
+        # 提供 pretrained_weights 时跳过 timm 内置下载（远程无网无法访问 HF），
+        # 用 pretrained=False 建模型后手动加载本地权重文件。
+        load_local = pretrained_weights is not None
         self.model = timm.create_model(
-            model_name, pretrained=pretrained, num_classes=0, global_pool="avg"
+            model_name, pretrained=(pretrained and not load_local),
+            num_classes=0, global_pool="avg",
         )
+        if load_local:
+            sd = torch.load(pretrained_weights, map_location="cpu")
+            missing, unexpected = self.model.load_state_dict(sd, strict=False)
+            if len(unexpected) > 2:
+                raise ValueError(
+                    f"pretrained_weights 键不匹配: missing={len(missing)} "
+                    f"unexpected={len(unexpected)}"
+                )
         self.out_dim = getattr(self.model, "num_features", IMAGE_EMBED_DIM)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -98,9 +116,11 @@ class BLEEP(nn.Module):
         num_genes: int,
         image_backbone: str = "resnet50",
         pretrained: bool = True,
+        pretrained_weights: str | None = None,
         projection_dim: int = PROJECTION_DIM,
         top_k: int = 50,
         ref_topk_weighted: bool = True,
+        finetune: bool = True,
     ):
         super().__init__()
         self.num_genes = num_genes
@@ -108,7 +128,11 @@ class BLEEP(nn.Module):
         self.top_k = top_k
         self.ref_topk_weighted = ref_topk_weighted
 
-        self.image_encoder = ImageEncoder(image_backbone, pretrained)
+        self.image_encoder = ImageEncoder(image_backbone, pretrained, pretrained_weights)
+        if not finetune:
+            # 冻结 resnet50 编码器（只训投影头），与冻结特征的 UNI2+MLP 公平对比
+            for p in self.image_encoder.parameters():
+                p.requires_grad = False
         self.image_projection = ProjectionHead(self.image_encoder.out_dim, projection_dim)
         self.spot_projection = ProjectionHead(num_genes, projection_dim)
         # 参考集（训练后填充）：{'spot_emb': (N,256) 已 L2 归一化, 'spot_expr': (N,G)}

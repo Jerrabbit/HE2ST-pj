@@ -34,9 +34,11 @@ class STNet(nn.Module):
         num_genes: int,
         pretrained: bool = True,
         bias_init: torch.Tensor | None = None,
+        finetune: bool = True,
     ):
         super().__init__()
         self.num_genes = num_genes
+        self.finetune = finetune
         if pretrained:
             weights = torchvision.models.DenseNet121_Weights.IMAGENET1K_V1
         else:
@@ -44,6 +46,10 @@ class STNet(nn.Module):
         backbone = torchvision.models.densenet121(weights=weights)
         in_features = backbone.classifier.in_features  # 1024
         backbone.classifier = nn.Linear(in_features, num_genes)
+        if not finetune:
+            # 冻结 DenseNet 特征提取器（只训 Linear 头），与冻结特征的 UNI2+MLP 公平对比
+            for p in backbone.features.parameters():
+                p.requires_grad = False
         with torch.no_grad():
             backbone.classifier.weight.zero_()
             if bias_init is not None:

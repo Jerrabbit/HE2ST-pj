@@ -42,3 +42,65 @@ class UNI2MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """输入 (B, 1536) UNI2 特征 → 输出 (B, num_genes) 归一化表达预测。"""
         return self.head(x)
+
+
+class ResidualBlock(nn.Module):
+    """残差 MLP 块（参考 Pixel2Gene ForwardSum 的残差设计）。"""
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.net(x)
+
+
+class UNI2MLPImproved(nn.Module):
+    """UNI2+MLP **改进版**：针对 MLP 的改进，参考其它模型设计。
+
+    改进点（相对统一 MLPHead）：
+        1. **bias 初始化为训练集平均表达**（ST-Net 关键技巧，官方 run_spatial.py 的
+           last.bias = mean_expression）——给预测一个强起点；
+        2. **残差连接**（Pixel2Gene ForwardSum 的 residual FeedForward）；
+        3. **SiLU 激活**（Phoenix/STFlow 等现代架构常用，优于 LeakyReLU）。
+
+    架构：
+        Linear(1536→768) → SiLU → Dropout
+        → ResidualBlock(768) × 2
+        → Linear(768→313)，bias = 训练集平均表达
+    """
+
+    input_type = "feature"
+
+    def __init__(
+        self,
+        num_genes: int,
+        hidden_dim: int = 768,
+        n_res_blocks: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_genes = num_genes
+        layers = [
+            nn.Linear(FEATURE_DIM, hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        ]
+        for _ in range(n_res_blocks):
+            layers.append(ResidualBlock(hidden_dim, dropout))
+        layers.append(nn.Linear(hidden_dim, num_genes))
+        self.head = nn.Sequential(*layers)
+
+    @torch.no_grad()
+    def set_bias_init(self, mean_expr: torch.Tensor) -> None:
+        """最后一层 bias = 训练集平均表达（ST-Net 关键技巧）。"""
+        last = self.head[-1]
+        last.bias.copy_(mean_expr.to(last.bias.device))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """输入 (B, 1536) UNI2 特征 → 输出 (B, num_genes) 归一化表达预测。"""
+        return self.head(x)
