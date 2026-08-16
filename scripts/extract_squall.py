@@ -76,8 +76,10 @@ def main() -> None:
         for j in range(j0, j1):
             img = Image.open(meta.iloc[j]["patch_path"]).convert("RGB")
             img = img.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
-            batch.append(torch.from_numpy(np.asarray(img, dtype=np.float32)).permute(2, 0, 1))
-        x = torch.stack(batch).to(args.device)                     # (B,3,224,224) 0-255
+            # 官方教程喂 rgb/255（0-1 归一化）；0-255 直接喂会错位特征
+            batch.append(torch.from_numpy(np.asarray(img, dtype=np.float32)
+                                          / 255.0).permute(2, 0, 1))
+        x = torch.stack(batch).to(args.device)                     # (B,3,224,224) 0-1
         res = torch.full((B, 1), RES, dtype=torch.float32, device=args.device)
         with torch.no_grad():
             z = model.forward_rgb(x, res)                           # (B,196,1024)

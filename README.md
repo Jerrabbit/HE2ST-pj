@@ -138,7 +138,7 @@ python -m pytest tests/ -v
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 ~0.32 仅参考 |
-| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（输出 313，官方 15757） | 0.2116 | 合理 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（未用官方解码器） | 0.2116 | 冻结解码器不迁移（~0.02），训练头合理 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
 | **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归 |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | 重训 0.27+（验证中） | 重训方向合理 |
@@ -157,6 +157,49 @@ python -m pytest tests/ -v
    官方配置重训才有学习（~0.19）；GHIST 因需核分割+细胞型管线尚未运行。
 5. **Path2Space**：冻结 154-MLP 集成在 Xenium per-cell 上 ~0.02-0.04（spot 级训练目标不迁移）；
    **重训**官方 MLP 头（冻结 CTransPath）后同切片验证 0.27+，正式 rep1→rep2 进行中。
+6. **SQUALL**：官方解码器推理（`forward_rgb_to_expr` → 15757 基因）在 per-cell 上 ~0.02
+   （解码器输出近常量，不迁移）；冻结 555M 编码器特征 + 训练统一 MLP = 0.2116 才是有效表示。
+   注：早期特征提取误用 0-255 输入（官方教程为 0-1），冻结特征基线待用 0-1 复核。
+
+## 数据预处理与评估统一流程（公平性保障）
+
+### 数据预处理（共用 `common/data/`，所有方法读同一数据目录格式）
+
+1. **h5ad → 数据目录**（`preprocess.py`）：`extract_patches_from_h5ad` 从 h5ad 坐标
+   （image_col/image_row）在整片 H&E 上裁 256×256 patch，导出 `patches/cell_{id}.png`、
+   `gene_expression.npy`（**raw counts**，log1p 逆变换回整数）、`gene_names.txt`、
+   `metadata.csv`（含 x_centroid/y_centroid 像素坐标）→ **所有方法输入一致**。
+2. **特征提取**（per-method，编码器不同故分开，均冻结）：UNI2、CTransPath、HIPT、
+   SQUALL、Local+Global → `data_dir/X_*.npy`；方法只读特征。
+3. **归一化**（`expression.py`）：默认 `log1p_zscore`，统计量（mean/std）只在**训练集**
+   拟合、测试集复用（`save_stats_json` 防泄漏）。
+4. **MPP 对齐**（`alignment.py`）：`align_by_coords`（按坐标）与 `align_by_mpp`（统一 MPP）
+   两版本（当前 rep1/rep2 同 MPP，天然一致）。
+5. **数据集**（`dataset.py`）：`HESTDataset`（patch 输入）与 `FeatureDataset`（特征输入，
+   支持多文件 concat，Local+Global 用）。
+
+### 评估（共用 `common/benchmark/harness.py` + `common/eval/metrics.py`）
+
+1. **统一指标**（`metrics.py`）：PCC/SPCC（归一化空间逐基因）、Top-k（逐细胞 raw counts
+   语义）、AUROC（逐基因 raw counts>0）。全部经 `compute_metrics_vectorized`（`harness.py`）。
+2. **统一协议**：50 epoch + val_PCC patience=10 早停 + lr=1e-3 + AdamW + log1p_zscore；
+   `fit()` 统一训练，`evaluate()` 统一评估。
+3. **各方法评估路径**（最终指标都走同一个 `compute_metrics_vectorized`）：
+   - **标准 harness**（BLEEP/DeepPT/Phoenix/SQUALL/ST-Net/uni2_mlp/Pixel2Gene/Path2Space
+     训练版）：`evaluate(model, loader, ...)`。
+   - **整片图方法**（SpatialEx/Hist2ST/STFlow/GHIST）：`evaluate_slide` 整片建图/ROI 推理，
+     指标用同一个 `compute_metrics_vectorized`（语义逐字节一致）。
+   - **冻结推理**（Path2Space 冻结 / SQUALL 解码器）：各自 test 脚本，同样调用
+     `compute_metrics_vectorized`。
+4. **归一化语义**：PCC/SPCC 在归一化空间（统计量来自训练集）；Top-k/AUROC 经
+   `_invert_normalization` 逆变换回 raw counts 语义。
+
+### 检查结论
+
+- **所有方法最终指标均来自 `compute_metrics_vectorized`**（或其调用者 evaluate/evaluate_slide），
+  指标语义一致 → **公平比较成立**。
+- 数据预处理共用同一数据目录格式、归一化与统计量防泄漏；特征提取因编码器不同而分开
+  （各方法按其官方编码器提取，属合理差异），输入粒度和输出语义统一。
 
 ## 下一步实验计划
 

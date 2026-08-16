@@ -272,6 +272,18 @@ class SquallDecoder(nn.Module):
 
         return pred_rgb, pred_expr
 
+    def forward_rgb_to_expr(self, z, res):
+        """官方解码器推理：编码器 token z → decoder_rgb → increase_dim_rgb → 表达。
+
+        返回 (B, expr_size, expr_size, expr_chans)。官方 Squall.py 原样。
+        """
+        B = z.shape[0]
+        H = W = self.img_size // self.down_sample
+        z_rgb = self.decoder_rgb(z).reshape(B, H, W, -1)
+        pred_expr = self.increase_dim_rgb(z_rgb).reshape(
+            B, self.expr_size, self.expr_size, self.config.expr_chans)
+        return pred_expr
+
 
 
 
@@ -364,6 +376,17 @@ class Squall(nn.Module):
     def forward_all(self, rgb, expr, res):
         z = self.encoder.forward_all(rgb, expr, res)
         return z
+
+    def forward_rgb_to_expr(self, rgb, res):
+        """官方解码器推理：rgb → 编码器 → decoder → (B, expr_size, expr_size, expr_chans)。
+
+        输入 rgb：(B, 3, H, W) 0-1 归一化（官方教程喂 rgb/255）。官方 Squall.py 原样。
+        """
+        if rgb.shape[1] != 3:
+            rgb = rgb.permute(0, 3, 1, 2)  # (B, C, H, W)
+        z = self.encoder.forward_rgb(rgb, res)
+        pred_expr = self.decoder.forward_rgb_to_expr(z, res)
+        return pred_expr
 
 
 class InfoNCE(nn.Module):
