@@ -76,20 +76,24 @@ python -m pytest tests/ -v
 | Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.432 | 0.573 | 313 基因适配有限 |
 | STFlow | 流模型 | 0.0847 | 0.0697 | 0.422 | 0.552 | whole-slide flow matching |
 | Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.323 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
+| Path2Space（重训训练头） | CTransPath 冻结 | **0.2780** | 0.2555 | 0.625 | 0.714 | 训练官方 MLP 头适配 per-cell（✅ 完成，见下） |
 | Hist2ST | 从头 | — | — | — | — | 统一协议下不收敛（见下） |
 
 > Top-10 / Top-100 列略去，完整指标见各 `outputs/bench_*/test_results.json`。
 
-### Path2Space 重训（新增，进行中）
+### Path2Space 重训（✅ 完成，正式 rep1→rep2）
 
 - **做法**：冻结 CTransPath（官方 ctranspath.pth）+ **训练**官方 MLP 头（`Path2SpaceMLP`，
   架构同官方 `MLP_regression_relu_two`，768→768→313）。特征走官方管线：**Macenko 染色
   归一化 + ctx512 大上下文**（`extract_ctranspath_context.py`，Macenko 与官方逐像素
   一致 corr≈0.9994）。
-- **同切片验证**（rep2 分裂，80k 训练 / 31k 测试）：epoch 7 val_PCC **0.2725**。
-- **对比**：冻结集成 ~0.02-0.04（无论 Macenko/上下文/平滑如何调都 ~0）。根因：冻结模型
-  在 **spot 级目标**上训练，无法适配 **per-cell** 目标；训练头可适配。
-- 正式 rep1→rep2 运行进行中，完成后更新本表。
+- **正式 rep1→rep2**（rep1 164k 训练 → rep2 111k 测试）：早停于 epoch 13（10ep 未提升），
+  best val_PCC **0.2780**；全量指标 **PCC 0.2780 / SPCC 0.2555 / top10 0.476 /
+  top50 0.561 / top100 0.625 / AUROC 0.713**。
+- **对比**：冻结集成 ~0.02-0.04（无论 Macenko/上下文/平滑如何调都 ~0）→ 训练头
+  **+0.24**。根因：冻结模型在 **spot 级目标**上训练，无法适配 **per-cell** 目标；
+  训练头可适配。跨切片（rep1→rep2）下有效，说明是表示适配而非过拟合。
+- **同切片验证**（rep2 分裂，80k/31k）：val_PCC **0.2725**，与跨切片 0.2780 一致。
 
 ### 参考结果（编码器微调，违反"冻结"原则，仅作参考）
 
@@ -98,15 +102,15 @@ python -m pytest tests/ -v
 | ST-Net（微调 DenseNet） | 0.3619 | 优势几乎全来自编码器微调（冻结后 0.2386） |
 | BLEEP（微调 resnet50） | ~0.32* | 微调增益类似（冻结后 0.2131）；*为修正 --img_size 224 后的预期值 |
 
-## 训练中（2026-08-16）
+## 训练中（2026-08-17）
 
 - **Hist2ST 官方配置重训**（`outputs/bench_hist2st_official`）：`--epochs 100 --lr 1e-5
-  --zinb 0.25 --zinb_coef 0.25 --bake 5 --lamb 0.5`，约 **epoch 45/100**，val_PCC ~0.18。
+  --zinb 0.25 --zinb_coef 0.25 --bake 5 --lamb 0.5`，约 **epoch 53/100**，val_PCC ~0.19。
   官方配置（低 lr + ZINB + bake 自蒸馏）下有真实学习，验证统一协议 null 的根因是协议
   而非架构；预计最终仍远低于 UNI2 系方法。
-- **BLEEP 全量测试**（非冻结，`--img_size 224` 修正）：待跑，回答"0.26 vs 0.32"之谜
-  （旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug）。
-- **Path2Space 正式 rep1→rep2**：rep1/rep2 的 Macenko+ctx512 特征提取（并行版）→ 训练
+- **BLEEP 全量测试**（非冻结，`--img_size 224` 修正）：运行中（111k cells 评估，节点
+  负载高较慢），回答"0.26 vs 0.32"之谜（旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug）。
+- ~~Path2Space 正式 rep1→rep2~~ ✅ 完成：PCC **0.2780**（见上表与重训章节）。
   `Path2SpaceMLP`。
 
 ## 关键结论信号
@@ -205,11 +209,12 @@ python -m pytest tests/ -v
 
 按优先级：
 
-1. **完成当前运行**：Path2Space 正式 rep1→rep2（rep2 特征提取 → 训练）；Hist2ST 官方配置
-   100ep 收尾；BLEEP 全量测试（`--img_size 224`，回答 0.26 vs 0.32）。
-2. **Local+Global 双尺度改进**（框架已就绪，`sweep.py`）：
-   - op1 调参：l1 从 448→112（步长 28），30ep best val_PCC，绘 PCC–l1 曲线选 best l1；
-   - op2 调参：固定 best l1，l2=56/70/84/98/112；
+1. **完成当前运行**：~~Path2Space 正式 rep1→rep2~~ ✅ 完成（PCC 0.2780）；Hist2ST 官方配置
+   100ep 收尾（ep53/100）；BLEEP 全量测试（`--img_size 224`，回答 0.26 vs 0.32）。
+2. **Local+Global 双尺度改进**（框架已就绪，单次 forward token 复用，`sweep.py`）：
+   - op1 调参：l1 从 448→28（步长 28，112 之下含 84/56/28 三档），30ep best val_PCC，
+     绘 PCC–l1 曲线选 best l1；
+   - op2 调参：固定 best l1，l2=56/70/84/98/112（同一次 forward 的 token 切分，零额外提取）；
    - 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
 3. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片，各情形做 benchmark。
 4. **多组学验证**：肾癌切片（基因+蛋白双组学）。
