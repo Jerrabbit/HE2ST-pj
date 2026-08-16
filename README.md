@@ -123,6 +123,56 @@ python -m pytest tests/ -v
 5. **Pixel2Gene cell 级（0.309）显著高于 spot 级（0.169）**：per-cell 特征克服了 spot 内
    异质性封顶。
 
+## 方法实现清单与忠实度分析（2026-08-16）
+
+> 统一训练协议：50 epoch + val_PCC patience=10 早停（取 best），lr=1e-3，AdamW，
+> `log1p_zscore` 归一化（统计量只在训练集拟合）。特例方法（Hist2ST/Phoenix/STFlow/
+> Path2Space 冻结）走各自官方训练流程，见备注。
+> **项目原则**：编码器冻结 + MLP 训练（ST-Net/BLEEP 用 `--no_finetune`）。
+
+| 方法 | 架构 | 编码器 | 头部/模型 | 官方忠实度 | PCC | 指标评估 |
+|---|---|---|---|---|---|---|
+| **UNI2+MLP**（基线） | 特征回归 | UNI2 冻结（1536-d CLS） | 统一 MLPHead 1536→512→256→313 | 本仓库基线 | **0.3245** | 合理，作为对比基准 |
+| **DeepPT** | 特征回归 | UNI2 冻结 | AE(1536→512)+官方 `MLP_regression`（Linear→Dropout→Linear） | ✅ 官方头原样；AE 为单细胞适配 | 0.3206 | 合理 |
+| **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.3085 / 0.169 | cell 级合理，spot 级受异质性封顶 |
+| **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
+| **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
+| **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 ~0.32 仅参考 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（输出 313，官方 15757） | 0.2116 | 合理 |
+| **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归 |
+| **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | 重训 0.27+（验证中） | 重训方向合理 |
+| **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | — | 待运行（需核分割管线） |
+| **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→~0.19（重训中） | 官方配置有真实学习 |
+
+### 忠实度与指标评估要点
+
+1. **特征回归类方法（UNI2+MLP / DeepPT / Pixel2Gene / SpatialEx / SQUALL / Path2Space）**
+   均以**冻结的 Foundation 特征**为输入、训练各自头部——结构最忠实、指标 0.21-0.32，反映"表示 + 简单头"的力量。
+2. **编码器微调类（ST-Net / BLEEP）**：官方架构本身微调编码器；按项目"冻结原则"改用 `--no_finetune`
+   （0.239 / 0.213）。微调版（0.362 / ~0.32）作为"微调增益"的参考证据，不计入合规表。
+3. **生成式方法（Phoenix / STFlow）**：忠实复现官方流匹配架构，但**生成式采样不适合 per-cell 回归**，
+   指标 0.08-0.15 属方法性质使然（与基线同特征对比：UNI2+MLP 0.32 vs STFlow 0.08）。
+4. **从头学习方法（Hist2ST / GHIST）**：无预训练特征，统一协议下难收敛（Hist2ST null），
+   官方配置重训才有学习（~0.19）；GHIST 因需核分割+细胞型管线尚未运行。
+5. **Path2Space**：冻结 154-MLP 集成在 Xenium per-cell 上 ~0.02-0.04（spot 级训练目标不迁移）；
+   **重训**官方 MLP 头（冻结 CTransPath）后同切片验证 0.27+，正式 rep1→rep2 进行中。
+
+## 下一步实验计划
+
+按优先级：
+
+1. **完成当前运行**：Path2Space 正式 rep1→rep2（rep2 特征提取 → 训练）；Hist2ST 官方配置
+   100ep 收尾；BLEEP 全量测试（`--img_size 224`，回答 0.26 vs 0.32）。
+2. **Local+Global 双尺度改进**（框架已就绪，`sweep.py`）：
+   - op1 调参：l1 从 448→112（步长 28），30ep best val_PCC，绘 PCC–l1 曲线选 best l1；
+   - op2 调参：固定 best l1，l2=56/70/84/98/112；
+   - 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
+3. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片，各情形做 benchmark。
+4. **多组学验证**：肾癌切片（基因+蛋白双组学）。
+5. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。
+6. 同步更新 README/CLAUDE.md 与 GitHub。
+
 ## Hist2ST 收敛失败说明
 
 官方设计为 350 epoch + lr 1e-5(Adam) + ZINB + 自蒸馏（bake），从原始 patch 从头训练
@@ -136,7 +186,8 @@ null result（探针日志：`logs/hist2st_probe/`）。不收敛的根因是**�
 
 ## 同步状态（2026-08-16）
 
-- **GitHub main = `1a8ed92`**，已包含全部最新代码（冻结变体、Hist2ST bake、Path2Space
-  可训练版、并行特征提取、README）；本地工作区干净。
-- **远程代码 = 本地**（含 GHIST 实现、Path2Space 可训练版、并行提取脚本；逐文件核对一致）。
-- 代码与运行结果的同步缺口以本节为准（此前 GHIST 未 scp、8 个未提交文件等历史问题均已解决）。
+- **GitHub main = `977bdf4`**，已包含全部最新代码（冻结变体、Hist2ST bake、Path2Space
+  可训练版、并行特征提取、Local+Global 双尺度框架、README）；本地工作区干净。
+- **远程代码 = 本地**（含 GHIST 实现、Path2Space 可训练版、并行提取脚本、Local+Global
+  框架；逐文件核对一致）。
+- 运行结果文件（`outputs/bench_*/`）不入库（gitignore），保存在远程。
