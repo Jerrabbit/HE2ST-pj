@@ -12,10 +12,10 @@
 每个配置：30 epoch（调参），early stop 取 best val_PCC（来自 history.json）。
 
 用法（远程 myenv1）：
-    # op1：l1 从 448 缩到 112，步长 28
+    # op1：l1 从 448 缩到 28，步长 28（112 之下追加 84/56/28 三档）
     python scripts/sweep.py --stage op1 --train_rep 1 --valid_rep 2 \
         --train_dir data/rep1 --valid_dir data/rep2 \
-        --l1_values 448 420 392 364 336 308 280 252 224 196 168 140 112 \
+        --l1_values 448 420 392 364 336 308 280 252 224 196 168 140 112 84 56 28 \
         --out_dir outputs/sweep_op1
     # op2：固定 best l1，l2 = 4..8 × 14
     python scripts/sweep.py --stage op2 --l1 336 --train_rep 1 --valid_rep 2 \
@@ -33,7 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 项目根目录
 
 REP_DIR = os.path.expanduser("~/HE2ST-pj/data")
-DEFAULT_L1_VALUES = list(range(448, 111, -28))   # 448,420,...,112（小步长 28）
+DEFAULT_L1_VALUES = list(range(448, 27, -28))  # 448,420,...,112,84,56,28（小步长 28，下探 <112）
 DEFAULT_L2_VALUES = [k * 14 for k in (4, 5, 6, 7, 8)]  # 56,70,84,98,112
 
 
