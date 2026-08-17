@@ -46,11 +46,11 @@ python -m pytest tests/ -v
   `methods/<name>/README.md`。
 - **"编码器冻结、MLP 训练"原则已确立**（用户明确）：据此 ST-Net / BLEEP 的基准结果改用
   **冻结编码器版**（ST-Net 0.2386、BLEEP 0.2131），微调版仅作参考（见下）。
-- **Path2Space 重训方案**：冻结 CTransPath（官方 ctranspath.pth）+ 训练官方 MLP 头
-  （`methods/path2space` 可训练版 `Path2SpaceMLP`）。同切片验证 **val_PCC 0.27+**，对比
-  冻结 154-MLP 集成 ~0.02。正式 rep1→rep2 运行进行中。
-- **Local-Global 双尺度模块尚未实现**：`methods/uni2_mlp/local_global.py` 仍为
-  `NotImplementedError`。当前 `variant='improved'` 只是 MLP 架构改进。
+- **Path2Space 重训 ✅ 完成**：冻结 CTransPath（官方 ctranspath.pth）+ 训练官方 MLP 头
+  （`methods/path2space` 可训练版 `Path2SpaceMLP`）。正式 rep1→rep2 **PCC 0.2780**
+  （冻结 154-MLP 集成 0.0411 → 训练头 0.2780，见下）。
+- **Local-Global 双尺度模块已实现**（单次 forward token 复用，2026-08-17 重构）：
+  `methods/uni2_mlp/local_global.py` 已就绪，`op1 sweep` 进行中（见下）。
 - 相邻切片基准（rep1 训练 → rep2 测试）结果见下节；之后进行三层次泛化评测。
 
 ## 相邻切片基准结果（rep1 → rep2，2026-08-16 更新）
@@ -62,24 +62,26 @@ python -m pytest tests/ -v
 
 ### 合规结果（编码器冻结 + 头部训练，按 PCC 排序）
 
-| 方法 | 编码器 | PCC | SPCC | Top-50 | AUROC | 备注 |
-|---|---|---|---|---|---|---|
-| **UNI2+MLP**（基线） | UNI2 冻结 | **0.3245** | 0.2852 | 0.575 | 0.739 | 超 UNI1 基线 0.312 |
-| **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.577 | 0.738 | 官方 MLP_regression 头 |
-| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.3085 | 0.2775 | 0.572 | 0.733 | ViT-256 per-cell 特征 |
-| **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.561 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
-| **ST-Net**（冻结 DenseNet） | DenseNet 冻结 | 0.2386 | 0.2318 | 0.545 | 0.694 | 微调版 0.3619 仅作参考 |
-| **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.525 | 0.666 | 微调版 ~0.32 仅作参考 |
-| **SQUALL** | 冻结 555M | 0.2812 | 0.2581 | 0.622 | 0.715 | 冻结特征 + 统一 MLP（0-1 输入修复后复核值，见下） |
-| Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.510 | 0.644 | spot 内异质性封顶 |
-| Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.474 | 0.592 | 官方 FlowTransformerModel |
-| Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.432 | 0.573 | 313 基因适配有限 |
-| STFlow | 流模型 | 0.0847 | 0.0697 | 0.422 | 0.552 | whole-slide flow matching |
-| Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.323 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
-| Path2Space（重训训练头） | CTransPath 冻结 | **0.2780** | 0.2555 | 0.625 | 0.714 | 训练官方 MLP 头适配 per-cell（✅ 完成，见下） |
-| Hist2ST | 从头 | — | — | — | — | 统一协议下不收敛；官方配置 0.2139（见下） |
+| 方法 | 编码器 | PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC | 备注 |
+|---|---|---|---|---|---|---|---|---|
+| **UNI2+MLP**（基线） | UNI2 冻结 | **0.3245** | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
+| **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头 |
+| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.3085 | 0.2775 | 0.498 | 0.572 | 0.629 | 0.733 | ViT-256 per-cell 特征 |
+| **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
+| **SQUALL** | 冻结 555M | 0.2812 | 0.2581 | 0.481 | 0.560 | 0.622 | 0.715 | 0-1 输入修复后复核值（见下） |
+| **Path2Space**（重训训练头） | CTransPath 冻结 | 0.2780 | 0.2555 | 0.476 | 0.561 | 0.625 | 0.714 | 训练官方 MLP 头适配 per-cell（见下） |
+| **ST-Net**（冻结 DenseNet） | DenseNet 冻结 | 0.2386 | 0.2318 | 0.457 | 0.545 | 0.620 | 0.694 | 微调版 0.3619 仅作参考 |
+| **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.440 | 0.525 | 0.601 | 0.666 | 微调版 0.3235 仅作参考 |
+| Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.379 | 0.510 | 0.622 | 0.644 | spot 内异质性封顶 |
+| Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.409 | 0.474 | 0.539 | 0.592 | 官方 FlowTransformerModel |
+| Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 313 基因适配有限 |
+| STFlow | 流模型 | 0.0847 | 0.0697 | 0.302 | 0.422 | 0.533 | 0.552 | whole-slide flow matching |
+| Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.148 | 0.323 | 0.432 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
+| Hist2ST | 从头 | — | — | — | — | — | — | 统一协议不收敛；官方配置 0.2139（见下） |
 
-> Top-10 / Top-100 列略去，完整指标见各 `outputs/bench_*/test_results.json`。
+> 统一协议：50ep + 早停 + log1p_zscore（统计量仅在训练集拟合）。Hist2ST 为**独立协议**
+> （官方 100ep + lr1e-5 + ZINB + bake 自蒸馏）：**PCC 0.2139 / SPCC 0.205 / Top-10 0.431 /
+> Top-50 0.531 / Top-100 0.611 / AUROC 0.670**。全部原始数值见各 `outputs/bench_*/test_results.json`。
 
 ### Path2Space 重训（✅ 完成，正式 rep1→rep2）
 
@@ -95,12 +97,13 @@ python -m pytest tests/ -v
   训练头可适配。跨切片（rep1→rep2）下有效，说明是表示适配而非过拟合。
 - **同切片验证**（rep2 分裂，80k/31k）：val_PCC **0.2725**，与跨切片 0.2780 一致。
 
-### 参考结果（编码器微调，违反"冻结"原则，仅作参考）
+### 参考结果（编码器微调 / 结构变体，非统一冻结协议，仅作参考）
 
-| 方法 | PCC | 说明 |
-|---|---|---|
-| ST-Net（微调 DenseNet） | 0.3619 | 优势几乎全来自编码器微调（冻结后 0.2386） |
-| BLEEP（微调 resnet50） | 0.3235 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
+| 方法 | PCC | SPCC | Top-50 | AUROC | 说明 |
+|---|---|---|---|---|---|
+| ST-Net（微调 DenseNet） | 0.3619 | 0.307 | 0.587 | 0.760 | 优势几乎全来自编码器微调（冻结后 0.2386） |
+| BLEEP（微调 resnet50） | 0.3235 | 0.283 | 0.560 | 0.732 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
+| UNI2+MLP improved（仅改 MLP） | 0.3248 | 0.284 | 0.576 | 0.736 | ≈ 基线 0.3245 → MLP 结构改进无收益，提升来自表示而非结构 |
 
 ## 训练中（2026-08-17）
 
@@ -119,7 +122,7 @@ python -m pytest tests/ -v
 1. **"编码器冻结、MLP 训练"下 UNI2+MLP（0.3245）领先**：简单 Foundation 特征 + 可训练头，
    超过冻结的领域模型（ST-Net 冻结 0.239、BLEEP 冻结 0.213、Path2Space 冻结 0.04）。
 2. **编码器微调是 ST-Net / BLEEP 高分的唯一来源**：ST-Net 0.362→0.239（−0.12）、BLEEP
-   ~0.32→0.213。公平对比（编码器冻结）下简单方法领先 → 支持"性能来自表示而非微调"。
+   0.3235→0.213。公平对比（编码器冻结）下简单方法领先 → 支持"性能来自表示而非微调"。
 3. **Path2Space 冻结不迁移、训练头可迁移**：冻结集成无论 Macenko / 大上下文 / 空间平滑
    都 ~0.02；换成**训练**官方 MLP 头后同切片 **0.27+**。说明低分是"冻结模型无法适配
    per-cell 目标"，不是 CTransPath 特征差。
@@ -142,7 +145,7 @@ python -m pytest tests/ -v
 | **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.3085 / 0.169 | cell 级合理，spot 级受异质性封顶 |
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
-| **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 ~0.32 仅参考 |
+| **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
 | **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
 | **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归 |
@@ -155,11 +158,11 @@ python -m pytest tests/ -v
 1. **特征回归类方法（UNI2+MLP / DeepPT / Pixel2Gene / SpatialEx / SQUALL / Path2Space）**
    均以**冻结的 Foundation 特征**为输入、训练各自头部——结构最忠实、指标 0.21-0.32，反映"表示 + 简单头"的力量。
 2. **编码器微调类（ST-Net / BLEEP）**：官方架构本身微调编码器；按项目"冻结原则"改用 `--no_finetune`
-   （0.239 / 0.213）。微调版（0.362 / ~0.32）作为"微调增益"的参考证据，不计入合规表。
+   （0.239 / 0.213）。微调版（0.362 / 0.324）作为"微调增益"的参考证据，不计入合规表。
 3. **生成式方法（Phoenix / STFlow）**：忠实复现官方流匹配架构，但**生成式采样不适合 per-cell 回归**，
    指标 0.08-0.15 属方法性质使然（与基线同特征对比：UNI2+MLP 0.32 vs STFlow 0.08）。
 4. **从头学习方法（Hist2ST / GHIST）**：无预训练特征，统一协议下难收敛（Hist2ST null），
-   官方配置重训才有学习（~0.19）；GHIST 因需核分割+细胞型管线尚未运行。
+   官方配置重训才有学习（**0.2139**）；GHIST 因需核分割+细胞型管线尚未运行。
 5. **Path2Space**：冻结 154-MLP 集成在 Xenium per-cell 上 ~0.02-0.04（spot 级训练目标不迁移）；
    **重训**官方 MLP 头（冻结 CTransPath）后正式 rep1→rep2 **0.2780**。
 6. **SQUALL**：官方解码器推理（`forward_rgb_to_expr` → 15757 基因）在 per-cell 上 ~0.02
