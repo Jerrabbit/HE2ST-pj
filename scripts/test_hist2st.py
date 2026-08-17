@@ -41,17 +41,23 @@ def main() -> None:
     if stats is None and gene_norm == "log1p_zscore":
         print("警告: best.pt 未存归一化统计量，log1p_zscore 逆变换会退化为 log1p 语义", flush=True)
 
-    # zinb>0 时训练侧模型含 ZINB core（core.mean/disp/pi/coef），test 侧构造需一致；
-    # 旧 checkpoint 的 config 未存 zinb，从 state_dict 自动检测（ZINB core 存在即需建）。
+    # 训练侧条件结构需在 test 侧复现，否则 load_state_dict 报 Unexpected keys：
+    #   zinb>0 → core.mean/disp/pi（ZINB 头）；bake>0 → core.coef（bake 自蒸馏头）。
+    # 旧 checkpoint 的 config 未存这些值，从 state_dict 自动检测。
     zinb = config.get("zinb", 0)
-    if not zinb:
-        sd = ckpt["model"]
-        if any(k.startswith("core.mean.") or k.startswith("core.disp.")
-               or k.startswith("core.pi.") or k.startswith("core.coef.") for k in sd):
-            zinb = 1
-            print("[Hist2ST] 从 state_dict 检测到 ZINB core，按 zinb>0 构造模型", flush=True)
+    bake = config.get("bake", 0)
+    lamb = config.get("lamb", 0)
+    sd = ckpt["model"]
+    if not zinb and (any(k.startswith("core.mean.") or k.startswith("core.disp.")
+                         or k.startswith("core.pi.") for k in sd)):
+        zinb = 1
+        print("[Hist2ST] 从 state_dict 检测到 ZINB core，按 zinb>0 构造模型", flush=True)
+    if not bake and any(k.startswith("core.coef.") for k in sd):
+        bake = 1
+        print("[Hist2ST] 从 state_dict 检测到 bake coef，按 bake>0 构造模型", flush=True)
 
-    model = Hist2STModel(num_genes=num_genes, fig_size=fig_size, n_pos=n_pos, zinb=zinb)
+    model = Hist2STModel(num_genes=num_genes, fig_size=fig_size, n_pos=n_pos,
+                         zinb=zinb, bake=bake, lamb=lamb)
     model.load_state_dict(ckpt["model"])
     model.to(args.device)
     print(f"[Hist2ST] 加载 best.pt: num_genes={num_genes} fig_size={fig_size} "
