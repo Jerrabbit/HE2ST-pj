@@ -70,7 +70,7 @@ python -m pytest tests/ -v
 | **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.561 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
 | **ST-Net**（冻结 DenseNet） | DenseNet 冻结 | 0.2386 | 0.2318 | 0.545 | 0.694 | 微调版 0.3619 仅作参考 |
 | **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.525 | 0.666 | 微调版 ~0.32 仅作参考 |
-| **SQUALL** | 冻结 555M | 0.2116 | 0.2103 | 0.533 | 0.674 | 冻结特征 + 统一 MLP |
+| **SQUALL** | 冻结 555M | 0.2812 | 0.2581 | 0.622 | 0.715 | 冻结特征 + 统一 MLP（0-1 输入修复后复核值，见下） |
 | Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.510 | 0.644 | spot 内异质性封顶 |
 | Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.474 | 0.592 | 官方 FlowTransformerModel |
 | Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.432 | 0.573 | 313 基因适配有限 |
@@ -110,9 +110,9 @@ python -m pytest tests/ -v
   而非架构；预计最终仍远低于 UNI2 系方法。
 - ~~BLEEP 全量测试~~ ✅ 完成：PCC **0.3235**（`--img_size 224` 修正，见参考结果表）。
 - ~~Path2Space 正式 rep1→rep2~~ ✅ 完成：PCC **0.2780**（见上表与重训章节）。
-- **SQUALL 0-1 输入复核**（运行中）：rep1+rep2 已用 `/255.0` 正确输入重提取
-  （`X_squall.npy`，0-255→0-1），正在重训统一 MLP（`outputs/bench_squall_01`）。
-  早期 epoch val_PCC 已 ~0.27，显著高于旧 0-255 特征的 0.2116。
+- ~~SQUALL 0-1 输入复核~~ ✅ 完成：rep1+rep2 用 `/255.0` 正确输入重提取后重训统一 MLP
+  （`outputs/bench_squall_01`），**PCC 0.2116 → 0.2812**（+0.07）——0-255 输入归一化错误
+  此前低估了 SQUALL；修正后 SPCC 0.258 / top100 0.622 / AUROC 0.715。
 
 ## 关键结论信号
 
@@ -143,7 +143,7 @@ python -m pytest tests/ -v
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 ~0.32 仅参考 |
-| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（未用官方解码器） | 0.2116 | 冻结解码器不迁移（~0.02），训练头合理 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
 | **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归 |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | 重训 0.27+（验证中） | 重训方向合理 |
@@ -161,9 +161,10 @@ python -m pytest tests/ -v
 4. **从头学习方法（Hist2ST / GHIST）**：无预训练特征，统一协议下难收敛（Hist2ST null），
    官方配置重训才有学习（~0.19）；GHIST 因需核分割+细胞型管线尚未运行。
 5. **Path2Space**：冻结 154-MLP 集成在 Xenium per-cell 上 ~0.02-0.04（spot 级训练目标不迁移）；
-   **重训**官方 MLP 头（冻结 CTransPath）后同切片验证 0.27+，正式 rep1→rep2 进行中。
+   **重训**官方 MLP 头（冻结 CTransPath）后正式 rep1→rep2 **0.2780**。
 6. **SQUALL**：官方解码器推理（`forward_rgb_to_expr` → 15757 基因）在 per-cell 上 ~0.02
-   （解码器输出近常量，不迁移）；冻结 555M 编码器特征 + 训练统一 MLP = 0.2116 才是有效表示。
+   （解码器输出近常量，不迁移）；冻结 555M 编码器特征 + 训练统一 MLP = **0.2812**
+   （0-1 输入修复后复核值）才是有效表示。
    注：早期特征提取误用 0-255 输入（官方教程为 0-1），冻结特征基线待用 0-1 复核。
 
 ## 数据预处理与评估统一流程（公平性保障）

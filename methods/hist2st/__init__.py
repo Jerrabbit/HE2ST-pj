@@ -354,7 +354,10 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             "history": history,
             "config": {"method": "hist2st", "num_genes": model.num_genes,
                        "fig_size": model.fig_size, "n_pos": model.n_pos,
-                       "gene_norm": gene_norm, "stats": _serialize_stats(stats)},
+                       "gene_norm": gene_norm, "stats": _serialize_stats(stats),
+                       "zinb": float(getattr(model.core, "zinb", 0)),
+                       "bake": int(getattr(model.core, "bake", 0)),
+                       "lamb": float(getattr(model.core, "lamb", 0))},
         }, os.path.join(args.output_dir, "best.pt"))
     with open(os.path.join(args.output_dir, "history.json"), "w") as f:
         json.dump(history, f, indent=2)
