@@ -62,6 +62,8 @@ python -m pytest tests/ -v
 
 ### 合规结果（编码器冻结 + 头部训练，按 PCC 排序）
 
+> 完整柱状图见 [`benchmark_pcc_bar.png`](benchmark_pcc_bar.png)（12 方法 PCC，基线标红）。
+
 | 方法 | 编码器 | PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC | 备注 |
 |---|---|---|---|---|---|---|---|---|
 | **UNI2+MLP**（基线） | UNI2 冻结 | **0.3245** | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
