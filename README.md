@@ -77,11 +77,11 @@ python -m pytest tests/ -v
 | Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 313 基因适配有限 |
 | STFlow | 流模型 | 0.0847 | 0.0697 | 0.302 | 0.422 | 0.533 | 0.552 | whole-slide flow matching |
 | Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.148 | 0.323 | 0.432 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
-| Hist2ST | 从头 | — | — | — | — | — | — | 统一协议不收敛；官方配置 0.2139（见下） |
+| Hist2ST（官方配置） | 从头 | 0.2139 | 0.2046 | 0.431 | 0.531 | 0.611 | 0.670 | 独立协议（见下），统一协议下不收敛 |
 
 > 统一协议：50ep + 早停 + log1p_zscore（统计量仅在训练集拟合）。Hist2ST 为**独立协议**
-> （官方 100ep + lr1e-5 + ZINB + bake 自蒸馏）：**PCC 0.2139 / SPCC 0.205 / Top-10 0.431 /
-> Top-50 0.531 / Top-100 0.611 / AUROC 0.670**。全部原始数值见各 `outputs/bench_*/test_results.json`。
+> （官方 100ep + lr1e-5 + ZINB + bake 自蒸馏），故单独一行不参与统一协议排序。全部原始
+> 数值见各 `outputs/bench_*/test_results.json`。
 
 ### Path2Space 重训（✅ 完成，正式 rep1→rep2）
 
