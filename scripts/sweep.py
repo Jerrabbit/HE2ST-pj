@@ -43,12 +43,21 @@ def _run(cmd: list[str]) -> None:
 
 
 def _best_val_pcc(out_dir: str) -> float:
-    """从 history.json 取最佳 val_PCC（train.py 输出）。"""
+    """从 history.json 取最佳验证 PCC。
+
+    unified harness fit() 的 history 条目存 **PCC**（大写，见 common/benchmark/harness.py）；
+    兼容历史脚本可能用的 val_PCC。无有效值返回 nan。
+    """
     hist_path = os.path.join(out_dir, "history.json")
     with open(hist_path) as f:
         history = json.load(f)
-    pccs = [float(h.get("val_PCC", float("nan"))) for h in history]
-    pccs = [p for p in pccs if p == p]  # 去 nan
+    pccs = []
+    for h in history:
+        p = h.get("PCC")
+        if p is None:
+            p = h.get("val_PCC")
+        if p is not None and p == p:  # 去 nan/None
+            pccs.append(float(p))
     return max(pccs) if pccs else float("nan")
 
 
