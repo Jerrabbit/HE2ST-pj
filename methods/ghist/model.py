@@ -34,6 +34,7 @@ class GHISTModel(nn.Module):
     """
 
     input_type = "patch"
+    self_loads_data = True   # 整片图方法自加载 ghist_data，train.py 跳过 DataLoader
 
     def __init__(
         self,

@@ -92,11 +92,18 @@ def main() -> None:
         with open(args.gene_file) as f:
             gene_list = [line.strip() for line in f if line.strip()]
 
-    # 训练集上拟合表达归一化统计量，验证/测试集复用（避免泄漏）
-    probe = HESTDataset(args.train_dir, gene_list=gene_list, gene_norm="none", debug=True)
-    num_genes = len(probe.gene_list)
-    gene_list = probe.gene_list
-    print(f"公共基因数: {num_genes}", flush=True)
+    # GHIST 整片图方法：自加载 ghist_data（无 metadata.csv），num_genes 从 genes.txt 读
+    if args.method == "ghist":
+        with open(os.path.join(args.train_dir, "genes.txt")) as f:
+            gene_list = [l.strip() for l in f if l.strip()]
+        num_genes = len(gene_list)
+        print(f"[ghist] 公共基因数: {num_genes}（ghist_data 格式）", flush=True)
+    else:
+        # 训练集上拟合表达归一化统计量，验证/测试集复用（避免泄漏）
+        probe = HESTDataset(args.train_dir, gene_list=gene_list, gene_norm="none", debug=True)
+        num_genes = len(probe.gene_list)
+        gene_list = probe.gene_list
+        print(f"公共基因数: {num_genes}", flush=True)
 
     # 方法专属模型参数（其它方法 build_model 不接受这些 kwargs）
     build_kwargs = {"zinb": args.zinb} if args.method == "hist2st" else {}
@@ -123,10 +130,17 @@ def main() -> None:
           f"feature_files={getattr(model, 'feature_files', getattr(model, 'feature_file', None))} "
           f"参数量={sum(p.numel() for p in model.parameters())}", flush=True)
 
+    os.makedirs(args.output_dir, exist_ok=True)
+    mod = importlib.import_module(f"methods.{args.method}")
+    if getattr(model, "self_loads_data", False):
+        # 整片图方法（GHIST）：train_function 自加载 ghist_data（含归一化统计量拟合）
+        mod.train_function(model, None, None, args, None)
+        print(f"训练完成（整片图自定义流程），最优模型保存于 {args.output_dir}/best.pt")
+        return
+
     train_ds = _make_dataset(model, args.train_dir, gene_list, args.gene_norm,
                              None, args.img_size, args.debug)
     stats = train_ds.stats
-    os.makedirs(args.output_dir, exist_ok=True)
     save_stats_json(stats, os.path.join(args.output_dir, "train_stats.json"))  # 测试复用，防泄漏
     valid_ds = _make_dataset(model, args.valid_dir, gene_list, args.gene_norm,
                              stats, args.img_size, args.debug)
@@ -137,7 +151,6 @@ def main() -> None:
     valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, shuffle=False,
                               num_workers=4, pin_memory=True)
 
-    mod = importlib.import_module(f"methods.{args.method}")
     if hasattr(mod, "train_function"):
         # 方法自带训练流程（如 BLEEP 对比学习、Hist2ST 负二项），复用同一数据加载与评估
         mod.train_function(model, train_loader, valid_loader, args, stats)
