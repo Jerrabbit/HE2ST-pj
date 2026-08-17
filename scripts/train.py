@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
                    help="Hist2ST 专属：模型 ZINB 头系数（官方默认 0.25，0 表示关闭）")
     p.add_argument("--pretrained_weights", default=None,
                    help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
+    p.add_argument("--feat_dim", type=int, default=None,
+                   help="DeepPT 特征维度（默认 1536=UNI2；ResNet50 忠实版用 2048）")
     p.add_argument("--variant", default=None,
                    help="方法专属变体（如 pixel2gene cell/spot）")
     p.add_argument("--d_model", type=int, default=None,
@@ -116,6 +118,8 @@ def main() -> None:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method in ("pixel2gene", "uni2_mlp", "squall") and args.variant:
         build_kwargs["variant"] = args.variant
+    if args.method == "deeppt" and args.feat_dim:
+        build_kwargs["feat_dim"] = args.feat_dim
     if args.method == "phoenix":
         if args.d_model:
             build_kwargs["d_model"] = args.d_model
