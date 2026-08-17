@@ -32,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件")
+    p.add_argument("--feature_file", default=None,
+                   help="覆盖模型默认特征文件（如 ResNet50 版 DeepPT 用 X_resnet50.npy）")
+    p.add_argument("--feat_dim", type=int, default=None,
+                   help="DeepPT 特征维度（ResNet50 忠实版用 2048）")
     p.add_argument("--stats_file", default=None,
                    help="训练集表达归一化统计量 json（None 时用测试集自身统计量拟合）")
     p.add_argument("--pretrained_weights", default=None,
@@ -54,6 +58,8 @@ def main() -> None:
 
     mod = importlib.import_module(f"methods.{args.method}")
     build_kwargs = {}
+    if args.method == "deeppt" and (args.feat_dim or cfg.get("feat_dim")):
+        build_kwargs["feat_dim"] = args.feat_dim or cfg.get("feat_dim")
     if args.method == "bleep" and args.pretrained_weights:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method in ("pixel2gene", "uni2_mlp") and args.variant:
@@ -84,7 +90,7 @@ def main() -> None:
             ref_stats = load_stats_json(train_stats)
 
     if getattr(model, "input_type", "patch") == "feature":
-        feature_file = getattr(model, "feature_file", None)  # 方法自带特征文件（如 X_ctranspath.npy）
+        feature_file = args.feature_file or getattr(model, "feature_file", None)  # 方法自带特征文件
         ds = FeatureDataset(args.test_dir, feature_path=feature_file,
                             gene_list=gene_list, gene_norm=args.gene_norm,
                             ref_stats=ref_stats)

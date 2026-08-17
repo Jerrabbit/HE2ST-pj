@@ -67,7 +67,7 @@ python -m pytest tests/ -v
 | 方法 | 编码器 | PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC | 备注 |
 |---|---|---|---|---|---|---|---|---|
 | **UNI2+MLP**（基线） | UNI2 冻结 | **0.3245** | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
-| **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头 |
+| **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头（UNI2 特征版；ResNet50 忠实版 0.2628 见下） |
 | **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.3085 | 0.2775 | 0.498 | 0.572 | 0.629 | 0.733 | ViT-256 per-cell 特征 |
 | **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
 | **SQUALL** | 冻结 555M | 0.2812 | 0.2581 | 0.481 | 0.560 | 0.622 | 0.715 | 0-1 输入修复后复核值（见下） |
@@ -98,6 +98,26 @@ python -m pytest tests/ -v
   **+0.24**。根因：冻结模型在 **spot 级目标**上训练，无法适配 **per-cell** 目标；
   训练头可适配。跨切片（rep1→rep2）下有效，说明是表示适配而非过拟合。
 - **同切片验证**（rep2 分裂，80k/31k）：val_PCC **0.2725**，与跨切片 0.2780 一致。
+
+### DeepPT ResNet50 忠实版（对比论文差异归因）
+
+官方 DeepPT（Hoang 2024, Nature Cancer）用 **ResNet50-ImageNet → AE(2048→512) → 官方 MLP_regression(512→512→G)** 预测整片 bulk 表达。为对照
+SpatialEx 论文（其报告 DeepPT 在相同乳腺癌 Xenium 数据上 **~0.205**，低于 SpatialEx），
+按官方流程实现忠实版（per-cell 适配）：官方 `ResNet50_IMAGENET1K_V2.pt` 提 2048-d 特征
+→ AE 重构预训练 → 官方 MLP 头（`outputs/bench_deeppt_resnet50`）。
+
+**结果对比**：
+
+| 版本 | 特征 | PCC | 说明 |
+|---|---|---|---|
+| DeepPT（UNI2 特征版） | UNI2 冻结 | 0.3206 | 与 UNI2+MLP 基线 0.3245 接近 |
+| **DeepPT（ResNet50 忠实版）** | ResNet50-ImageNet | **0.2628** | 官方特征 + 官方头（本 benchmark 统一协议） |
+| SpatialEx 论文 DeepPT | ResNet50 | ~0.205 | 论文 280 基因面板等独立协议 |
+
+**归因**：UNI2 → ResNet50 使 PCC **0.3206 → 0.2628（−0.06）**，特征提取器是主要因素；
+剩余差距（0.2628 vs 0.205）来自协议差异（313 vs 280 基因、per-cell 粒度、归一化/训练设定）。
+同时印证：**表示（Representation）强于架构**——相同官方头下，UNI2 特征（0.32）显著优于
+ResNet50（0.26）。
 
 ### 参考结果（编码器微调 / 结构变体，非统一冻结协议，仅作参考）
 
