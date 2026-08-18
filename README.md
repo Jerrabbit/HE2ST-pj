@@ -127,17 +127,26 @@ ResNet50（0.26）。
 | BLEEP（微调 resnet50） | 0.3235 | 0.283 | 0.560 | 0.732 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
 | UNI2+MLP improved（仅改 MLP） | 0.3248 | 0.284 | 0.576 | 0.736 | ≈ 基线 0.3245 → MLP 结构改进无收益，提升来自表示而非结构 |
 
-## 训练中（2026-08-17）
+## 当前进度（2026-08-18）
 
-- ~~Hist2ST 官方配置重训~~ ✅ 完成（`outputs/bench_hist2st_official`）：early stop at
-  **epoch 66**，`--epochs 100 --lr 1e-5 --zinb 0.25 --zinb_coef 0.25 --bake 5 --lamb 0.5`，
-  全量指标 **PCC 0.2139 / SPCC 0.205 / top100 0.611 / AUROC 0.670**。官方配置（低 lr +
-  ZINB + bake 自蒸馏）下有真实学习，验证统一协议 null 的根因是协议而非架构。
-- ~~BLEEP 全量测试~~ ✅ 完成：PCC **0.3235**（`--img_size 224` 修正，见参考结果表）。
-- ~~Path2Space 正式 rep1→rep2~~ ✅ 完成：PCC **0.2780**（见上表与重训章节）。
-- ~~SQUALL 0-1 输入复核~~ ✅ 完成：rep1+rep2 用 `/255.0` 正确输入重提取后重训统一 MLP
-  （`outputs/bench_squall_01`），**PCC 0.2116 → 0.2812**（+0.07）——0-255 输入归一化错误
-  此前低估了 SQUALL；修正后 SPCC 0.258 / top100 0.622 / AUROC 0.715。
+### 已完成
+
+- **12 种 benchmark 方法全部有最终合规结果**（见上表）；批任务全部收尾：
+  Hist2ST 官方 **0.2139**、BLEEP 全量 **0.3235**、Path2Space 正式 **0.2780**、
+  SQUALL 0-1 复核 **0.2812**、DeepPT ResNet50 忠实版 **0.2628**（见 DeepPT 章节）。
+- **GHIST 数据管线** ✅ 完成：Xenium 核多边形 → HE 像素核分割 mask（精确 2D 仿射，
+  残差 <0.5px，对齐 <2px），`data/ghist_rep1/rep2`（164000/111345 核）；tiling 训练
+  （官方 256×256 patch, overlap 30）已跑通。
+
+### 运行中
+
+- **Local+Global op1 sweep**（`sweep.py --stage op1`，16 个 l1）：**8/16 完成**，
+  PCC-l1 曲线 **0.3105→0.3264 单调上升**（l1=252=0.3264 已超过 224 基线 0.3245）；
+  l1<224 区间（196→28）进行中。
+- **GHIST 训练**（30ep, lr 1e-3, batch 16）：epoch 21/30，**best val_PCC 0.2995**
+  （从零训练的整片图方法已超过 ST-Net 冻结 0.2386）。
+- **STFlow Top50 HVG 实现校验**：按原论文协议（Top50 高变基因逐基因 PCC）评估，
+  验证低 PCC（0.0847 全基因）是否因基因集而非实现（结果待出）。
 
 ## 关键结论信号
 
@@ -168,11 +177,11 @@ ResNet50（0.26）。
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
-| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP（官方 TransformerDecoder 头待训，task #18） | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
-| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归 |
-| **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | 重训 0.27+（验证中） | 重训方向合理 |
-| **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | — | 待运行（需核分割管线） |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归；Top50 HVG 协议校验中（论文 0.3-0.4） |
+| **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
+| **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | 训练中 **0.2995** | 数据管线已完成，tiling 训练中 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
 
 ### 忠实度与指标评估要点
@@ -236,15 +245,16 @@ ResNet50（0.26）。
 
 按优先级：
 
-1. **完成当前运行**：~~Path2Space 正式 rep1→rep2~~ ✅ 完成（PCC 0.2780）；Hist2ST 官方配置
-   100ep 收尾（ep53/100）；BLEEP 全量测试（`--img_size 224`，回答 0.26 vs 0.32）。
-2. **Local+Global 双尺度改进**（框架已就绪，单次 forward token 复用，`sweep.py`）：
-   - op1 调参：l1 从 448→28（步长 28，112 之下含 84/56/28 三档），30ep best val_PCC，
-     绘 PCC–l1 曲线选 best l1；
-   - op2 调参：固定 best l1，l2=56/70/84/98/112（同一次 forward 的 token 切分，零额外提取）；
-   - 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
-3. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片，各情形做 benchmark。
-4. **多组学验证**：肾癌切片（基因+蛋白双组学）。
+1. **Local+Global 双尺度正式实验**（进行中）：op1 sweep（l1 448→28，**8/16 完成**，
+   曲线 0.3105→0.3264 单调上升，l1=252 已超基线）→ op2 sweep（l2=56~112，token 复用
+   零额外提取）→ 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
+2. **GHIST 训练收尾**：30ep 完成后测试，补入基准表（当前 best 0.2995）。
+3. **STFlow 实现校验**：Top50 HVG 协议评估（验证低 PCC 归因于基因集 vs 实现）。
+4. **官方预测头补齐**（用户原则：官方有头不换统一 MLP）：
+   - SQUALL 官方 TransformerDecoder 头训练（`--save_tokens` → `SQUALLDecoderHead`）；
+   - Pixel2Gene cell 级变体改用官方 ForwardSumModel（代码已改，待重训）。
+5. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片。
+6. **多组学验证**：肾癌切片（基因+蛋白双组学）。
 5. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。
 6. 同步更新 README/CLAUDE.md 与 GitHub。
 

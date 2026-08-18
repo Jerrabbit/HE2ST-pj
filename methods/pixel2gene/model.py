@@ -98,25 +98,21 @@ class Pixel2GeneModel(nn.Module):
 
 
 class Pixel2GeneCellModel(nn.Module):
-    """Pixel2Gene **方案 B（cell-level）**：level-1 ViT-256 特征 + 统一 MLP。
+    """Pixel2Gene **方案 B（cell-level）**：level-1 ViT-256 特征 + 官方 ForwardSum 头。
 
     只用 HIPT 的 level-1（vit_256_small_dino），每细胞自己的 256×256 patch →
-    [CLS] 384 维特征（X_hipt_cell.npy）。**真正的 per-cell 预测**（无 spot 内封顶），
-    作为课题 cell-level benchmark 的 Pixel2Gene 版本。按课题要求 6 统一规则
-    （纯 embedding 需外接头）接统一 MLPHead(384 → G)。
+    [CLS] 384 维特征（X_hipt_cell.npy）。**真正的 per-cell 预测**（无 spot 内封顶）。
+    预测头沿用**官方 ForwardSumModel**（n_inp 适配到 384，与 spot 级同架构：
+    net_lat 4×FeedForward + net_out ELU 输出头）——官方有头不换统一 MLP。
     """
 
     input_type = "feature"
     feature_file = "X_hipt_cell.npy"
 
-    def __init__(self, num_genes: int, hidden_dims: list[int] = (512, 256),
-                 dropout: float = 0.1):
+    def __init__(self, num_genes: int):
         super().__init__()
         self.num_genes = num_genes
-        self.head = MLPHead(
-            input_dim=384, hidden_dims=hidden_dims,
-            output_dim=num_genes, dropout=dropout,
-        )
+        self.head = ForwardSumModel(n_inp=384, n_out=num_genes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """ViT-256 特征 (B, 384) → (B, G) 归一化表达预测。"""
