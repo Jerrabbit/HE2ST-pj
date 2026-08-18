@@ -120,6 +120,21 @@ SpatialEx 论文（其报告 DeepPT 在相同乳腺癌 Xenium 数据上 **~0.205
 同时印证：**表示（Representation）强于架构**——相同官方头下，UNI2 特征（0.32）显著优于
 ResNet50（0.26）。
 
+### STFlow 低分归因（实现校验，2026-08-19）
+
+STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做两层校验：
+
+| 评估 | 全 313 基因 | Top50 HVG |
+|---|---|---|
+| zscore 空间 | 0.0847 | 0.1846 |
+| **log1p 空间（官方 normalize）** | 0.0758 | **0.2569** |
+| 论文 | — | 0.3-0.4 |
+
+**结论**：① 基因集是主因之一（Top50 HVG 显著高于全基因）；② **归一化空间是关键差异**
+（log1p 比 zscore 的 Top50 HVG 高 +0.07）；③ 剩余差距（0.257 vs 0.3-0.4）来自
+**数据粒度**（Xenium per-cell 稀疏噪声 vs 论文 Visium spot 聚合）与先验
+（官方默认 zinb，我们用 gaussian）。架构（SpatialTransformer + 流匹配）忠实官方。
+
 ### 参考结果（编码器微调 / 结构变体，非统一冻结协议，仅作参考）
 
 | 方法 | PCC | SPCC | Top-50 | AUROC | 说明 |
@@ -185,7 +200,7 @@ ResNet50（0.26）。
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
 | **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP（官方 TransformerDecoder 头待训，task #18） | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
-| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归；Top50 HVG 协议校验中（论文 0.3-0.4） |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 全基因低分因基因集+粒度：Top50 HVG 校验 **0.257（log1p 空间）**，论文 0.3-0.4 差距来自 per-cell vs spot（见下） |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
 | **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
