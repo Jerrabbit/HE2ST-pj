@@ -30,6 +30,8 @@ def main() -> None:
     p.add_argument("--train_dir", required=True, help="训练集目录（选 HVG）")
     p.add_argument("--test_dir", required=True, help="测试集目录（评估）")
     p.add_argument("--stats", default=None, help="train_stats.json（归一化统计量）")
+    p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "log1p", "none"],
+                   default=None, help="覆盖模型配置的归一化空间（默认读 best.pt config）")
     p.add_argument("--top_k", type=int, default=50)
     p.add_argument("--device", default="cuda")
     args = p.parse_args()
@@ -46,13 +48,14 @@ def main() -> None:
     model = build_model(num_genes=ckpt["config"].get("num_genes", 313))
     model.load_state_dict(ckpt["model"])
     model = model.to(args.device).eval()
+    gene_norm = args.gene_norm or ckpt["config"].get("gene_norm", "log1p_zscore")
     print(f"[STFlow] 模型加载: num_genes={model.num_genes} "
-          f"n_sample_steps={model.n_sample_steps}", flush=True)
+          f"n_sample_steps={model.n_sample_steps} gene_norm={gene_norm}", flush=True)
 
     stats = load_stats_json(args.stats) if args.stats else None
 
-    # 2) rep2 逐 ROI 采样
-    coords, features, expr_norm = _load_slide(args.test_dir, "log1p_zscore", stats)
+    # 2) rep2 逐 ROI 采样（与模型训练同归一化空间）
+    coords, features, expr_norm = _load_slide(args.test_dir, gene_norm, stats)
     N, G = expr_norm.shape
     y_pred = np.full((N, G), np.nan, dtype=np.float32)
     covered = np.zeros(N, dtype=bool)
