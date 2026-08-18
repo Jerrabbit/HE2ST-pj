@@ -100,7 +100,7 @@ def normalize_expression(
 
     参数：
         expr_raw: (N, G) raw counts
-        gene_norm: 'log1p_zscore'（默认）| 'log1p_norm_total' | 'none'
+        gene_norm: 'log1p_zscore'（默认）| 'log1p_norm_total' | 'log1p' | 'none'
         ref_stats: 训练集拟合的统计量（None 表示在 expr_raw 上拟合）
 
     返回：
@@ -109,8 +109,12 @@ def normalize_expression(
             stats: 使用的统计量 dict（供后续数据集复用）
                 - zscore: {'means': (1,G), 'stds': (1,G)}
                 - norm_total: {'median_lib': float}
+                - log1p: {}（纯 log1p，与 STFlow 官方 interpolant.normalize 一致）
                 - none: {}
     """
+    if gene_norm == "log1p":
+        # 纯 log1p（STFlow 官方空间）：raw counts → log1p，无 zscore/总库归一化
+        return np.log1p(expr_raw).astype(np.float32), {}
     if gene_norm == "log1p_norm_total":
         X = expr_raw.copy()
         lib = X.sum(axis=1, keepdims=True)

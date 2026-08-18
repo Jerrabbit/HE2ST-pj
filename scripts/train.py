@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--feature_file", default=None,
                    help="特征输入方法：覆盖模型自带特征文件（逗号分隔多个，如 "
                         "X_uni2_g512.npy,X_uni2_l56.npy 用于 Local+Global）")
-    p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "none"],
+    p.add_argument("--gene_norm", choices=["log1p_zscore", "log1p_norm_total", "log1p", "none"],
                    default="log1p_zscore")
     p.add_argument("--gene_file", default=None, help="公共基因列表文件（每行一个基因名）")
     p.add_argument("--img_size", type=int, default=0, help="patch 输入时 resize 到该尺寸（0=原图）")
