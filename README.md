@@ -68,6 +68,7 @@ python -m pytest tests/ -v
 |---|---|---|---|---|---|---|---|---|
 | **UNI2+MLP**（基线） | UNI2 冻结 | **0.3245** | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
 | **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头（UNI2 特征版；ResNet50 忠实版 0.2628 见下） |
+| **GHIST** | UNet 从头 | 0.3164 | 0.2952 | 0.500 | 0.525 | 0.516 | 0.700 | 官方 Framework（核 mask + 图），从零训练 |
 | **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.3085 | 0.2775 | 0.498 | 0.572 | 0.629 | 0.733 | ViT-256 per-cell 特征 |
 | **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
 | **SQUALL** | 冻结 555M | 0.2812 | 0.2581 | 0.481 | 0.560 | 0.622 | 0.715 | 0-1 输入修复后复核值（见下） |
@@ -140,13 +141,18 @@ ResNet50（0.26）。
 
 ### 运行中
 
-- **Local+Global op1 sweep**（`sweep.py --stage op1`，16 个 l1）：**8/16 完成**，
-  PCC-l1 曲线 **0.3105→0.3264 单调上升**（l1=252=0.3264 已超过 224 基线 0.3245）；
-  l1<224 区间（196→28）进行中。
-- **GHIST 训练**（30ep, lr 1e-3, batch 16）：epoch 21/30，**best val_PCC 0.2995**
-  （从零训练的整片图方法已超过 ST-Net 冻结 0.2386）。
-- **STFlow Top50 HVG 实现校验**：按原论文协议（Top50 高变基因逐基因 PCC）评估，
-  验证低 PCC（0.0847 全基因）是否因基因集而非实现（结果待出）。
+- **Local+Global op1 sweep**（`sweep.py --stage op1`，16 个 l1）：**10/16 完成**，
+  PCC-l1 曲线 **0.3105→0.3333 单调上升**（l1=224=0.3290 已超基线 0.3245；
+  l1<224 的 196/168 继续走高 0.3313/0.3333）；l1<168 区间（140→28）进行中。
+- **STFlow log1p 实现校验**：按原论文协议（log1p 空间）训练中，完成后用
+  `eval_stflow_top50.py` 评估 Top50 HVG 平均 PCC（对照 zscore 版 0.1846、论文 0.3-0.4）。
+
+### 已完成补充
+
+- **GHIST** ✅ 完成：训练（best val_PCC 0.3164@ep28）+ 正式测试 **PCC 0.3164**
+  （修复 ref_expr 传递 bug 后与训练一致）；从零训练的整片图方法追平 UNI2 特征系。
+- **STFlow Top50 HVG 校验** ✅：全 313 基因 0.0847 → **Top50 HVG 0.1846**，
+  基因集是低分主因之一，但距论文 0.3-0.4 仍有差距（继续查归一化空间/数据粒度）。
 
 ## 关键结论信号
 
@@ -181,7 +187,7 @@ ResNet50（0.26）。
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
 | **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 生成式不适配 per-cell 回归；Top50 HVG 协议校验中（论文 0.3-0.4） |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
-| **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | 训练中 **0.2995** | 数据管线已完成，tiling 训练中 |
+| **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
 
 ### 忠实度与指标评估要点

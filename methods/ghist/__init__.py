@@ -281,8 +281,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             "history": history,
             "config": {"method": "ghist", "num_genes": model.num_genes,
                        "gene_norm": args.gene_norm,
-                       "stats": _serialize_stats(stats),
-                       "ref_expr": ref_expr.tolist()},
+                       "stats": _serialize_stats(stats_tr),   # 保存训练拟合统计量（勿存 arg 的 None）
+                       "ref_expr": ref_expr.tolist()},        # 训练参考表达，测试须复用
         }, os.path.join(args.output_dir, "best.pt"))
     with open(os.path.join(args.output_dir, "history.json"), "w") as f:
         json.dump(history, f, indent=2)
