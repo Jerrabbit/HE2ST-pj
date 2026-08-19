@@ -143,8 +143,16 @@ class FeatureDataset(Dataset):
                 fp = os.path.join(data_dir, fp)
             if not os.path.exists(fp):
                 raise FileNotFoundError(f"特征文件不存在: {fp}")
-            feats.append(np.load(fp).astype(np.float32))  # (N, D_i)
-        self.features = np.concatenate(feats, axis=1)      # (N, sum D_i)
+            # 大文件（如 SQUALL token 196×1024，131GB）用 mmap 只读映射，避免全量载入 OOM
+            arr = np.load(fp, mmap_mode="r")
+            if arr.dtype != np.float32:
+                arr = arr.astype(np.float32)  # 仅 dtype 不符才复制
+            feats.append(arr)                 # (N, D_i)
+        # 单文件保持 mmap 视图（不 concat 复制）；多文件才拼接
+        if len(feats) == 1:
+            self.features = feats[0]
+        else:
+            self.features = np.concatenate(feats, axis=1)  # (N, sum D_i)
 
         self.metadata = pd.read_csv(os.path.join(data_dir, "metadata.csv"))
         if debug and len(self.metadata) > 100:
