@@ -42,12 +42,14 @@ class STFlow(nn.Module):
         n_neighbors: int = 8,
         dropout: float = 0.1,
         n_sample_steps: int = 20,
+        prior: str = "gaussian",   # gaussian（默认）| zinb（官方默认，log1p 空间）
         seed: int = 0,
     ):
         super().__init__()
         self.num_genes = num_genes
         self.feature_dim = feature_dim
         self.n_sample_steps = n_sample_steps
+        self.prior = prior
         self.seed = seed
 
         config = STFlowConfig(
@@ -57,6 +59,30 @@ class STFlow(nn.Module):
         )
         self.denoiser = Denoiser(config)
 
+    # ---------- 先验采样 ----------
+    def _sample_prior(self, shape: tuple, device: str) -> torch.Tensor:
+        """按 self.prior 采样 ODE 起点（官方 interpolant 语义）。"""
+        if self.prior == "zinb":
+            return self._zinb_prior(shape, device)
+        return torch.randn(shape, device=device)
+
+    @staticmethod
+    def _zinb_prior(shape: tuple, device: str) -> torch.Tensor:
+        """官方 zinb 先验（train.py 固定参数）：ZINB(total_count=1, logits=0.1,
+        zi_logits=0)，采样后 log1p（官方 interpolant.normalize=True 语义）。
+
+        官方 scvi ZeroInflatedNegativeBinomial 参数：p=sigmoid(0.1)=0.525，
+        零膨胀概率 sigmoid(0)=0.5。纯 torch 实现（无需 scvi）。
+        """
+        from torch.distributions import NegativeBinomial
+
+        nb = NegativeBinomial(
+            total_count=torch.ones(shape, device=device),
+            probs=torch.full(shape, 0.525, device=device),
+        ).sample()
+        zi = (torch.rand(shape, device=device) < 0.5).float()
+        return torch.log1p(nb * (1 - zi))
+
     # ---------- 训练侧（ROI 级） ----------
     def flow_loss(
         self,
@@ -64,13 +90,13 @@ class STFlow(nn.Module):
         img_features: torch.Tensor,  # (1, N, F) UNI2 条件
         coords: torch.Tensor,        # (1, N, 2)
     ) -> tuple[torch.Tensor, dict]:
-        """线性插值流匹配损失（官方 interpolant 语义，高斯先验，zscore 空间）。
+        """线性插值流匹配损失（官方 interpolant 语义，prior 可配，log1p/zscore 空间）。
 
         z_t = (1-t)·ε + t·z，v_target = z - ε；去噪器从 (z_t, t, 特征, 坐标) 预测 v。
         """
         B, N, G = gene_expr.shape
         z = gene_expr
-        eps = torch.randn_like(z)
+        eps = self._sample_prior(z.shape, z.device)
         t = torch.rand(B, device=gene_expr.device)          # 每个 ROI 一个 t
         z_t = (1 - t[:, None, None]) * eps + t[:, None, None] * z
         v_target = z - eps                                   # (B, N, G)
@@ -87,10 +113,10 @@ class STFlow(nn.Module):
         coords: torch.Tensor,        # (1, N, 2)
         device: str = "cuda",
     ) -> torch.Tensor:
-        """对一个 ROI 做 Euler ODE 采样：高斯噪声 → t=1 → (1, N, G) 归一化表达。"""
+        """对一个 ROI 做 Euler ODE 采样：先验 → t=1 → (1, N, G) 归一化表达。"""
         B, N, F = img_features.shape
-        gen = torch.Generator(device=device).manual_seed(self.seed)
-        z = torch.randn(B, N, self.num_genes, device=device, generator=gen)
+        torch.manual_seed(self.seed)
+        z = self._sample_prior((B, N, self.num_genes), device)
 
         ts = torch.linspace(0.0, 1.0, self.n_sample_steps + 1, device=device)
         for i in range(self.n_sample_steps):

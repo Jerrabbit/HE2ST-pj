@@ -45,7 +45,11 @@ def main() -> None:
 
     # 1) 加载模型
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    model = build_model(num_genes=ckpt["config"].get("num_genes", 313))
+    model = build_model(
+        num_genes=ckpt["config"].get("num_genes", 313),
+        prior=ckpt["config"].get("prior", "gaussian"),
+        n_sample_steps=ckpt["config"].get("n_sample_steps", 20),
+    )
     model.load_state_dict(ckpt["model"])
     model = model.to(args.device).eval()
     gene_norm = args.gene_norm or ckpt["config"].get("gene_norm", "log1p_zscore")

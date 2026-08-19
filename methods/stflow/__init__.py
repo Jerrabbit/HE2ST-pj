@@ -183,6 +183,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             "history": history,
             "config": {"method": "stflow", "num_genes": model.num_genes,
                        "gene_norm": args.gene_norm,
+                       "prior": getattr(model, "prior", "gaussian"),
+                       "n_sample_steps": getattr(model, "n_sample_steps", 20),
                        "stats": _serialize_stats(stats)},
         }, os.path.join(args.output_dir, "best.pt"))
     with open(os.path.join(args.output_dir, "history.json"), "w") as f:
