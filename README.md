@@ -156,11 +156,15 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 ### 运行中
 
-- **Local+Global op1 sweep**（`sweep.py --stage op1`，16 个 l1）：**10/16 完成**，
-  PCC-l1 曲线 **0.3105→0.3333 单调上升**（l1=224=0.3290 已超基线 0.3245；
-  l1<224 的 196/168 继续走高 0.3313/0.3333）；l1<168 区间（140→28）进行中。
-- **STFlow log1p 实现校验**：按原论文协议（log1p 空间）训练中，完成后用
-  `eval_stflow_top50.py` 评估 Top50 HVG 平均 PCC（对照 zscore 版 0.1846、论文 0.3-0.4）。
+- **Local+Global op2 sweep**：固定 best l1=112，l2=56/70/84/98/112（单次 forward
+  token 复用，零额外提取），每 l2 30ep 训练选 best val_PCC。
+
+### 已完成补充
+
+- **op1 sweep ✅ 完成（16 个 l1 全跑完）**：PCC-l1 曲线为**倒 U 型**，峰值 **l1=112
+  （0.3365）**，比标准 224 基线（0.3245）高 +0.012；过大（>140）或过小（<84）均下降。
+  结论：Global 分支最优视野 ≈40.7 µm（l1=112）。曲线见 `outputs/sweep_op1/op1_curve.png`。
+- **STFlow 实现校验 ✅ 完成**：见上文 STFlow 归因专节（log1p 空间 Top50 HVG 0.2569）。
 
 ### 已完成补充
 
@@ -266,14 +270,14 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 按优先级：
 
-1. **Local+Global 双尺度正式实验**（进行中）：op1 sweep（l1 448→28，**8/16 完成**，
-   曲线 0.3105→0.3264 单调上升，l1=252 已超基线）→ op2 sweep（l2=56~112，token 复用
-   零额外提取）→ 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
-2. **GHIST 训练收尾**：30ep 完成后测试，补入基准表（当前 best 0.2995）。
-3. **STFlow 实现校验**：Top50 HVG 协议评估（验证低 PCC 归因于基因集 vs 实现）。
+1. **Local+Global 双尺度正式实验**（进行中）：~~op1 sweep~~ ✅ 完成（**best l1=112，
+   0.3365**，倒 U 型曲线）→ **op2 sweep 进行中**（l2=56~112，token 复用零提取）
+   → 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
+2. ~~GHIST 训练收尾~~ ✅ 完成：**PCC 0.3164**（已补基准表）。
+3. ~~STFlow 实现校验~~ ✅ 完成：log1p 空间 Top50 HVG **0.2569**（见归因专节）。
 4. **官方预测头补齐**（用户原则：官方有头不换统一 MLP）：
-   - SQUALL 官方 TransformerDecoder 头训练（`--save_tokens` → `SQUALLDecoderHead`）；
-   - Pixel2Gene cell 级变体改用官方 ForwardSumModel（代码已改，待重训）。
+   - ~~Pixel2Gene cell 级改用官方 ForwardSumModel~~ ✅ 完成（PCC 0.2699）；
+   - **SQUALL 官方 TransformerDecoder 头训练**（`--save_tokens` → `SQUALLDecoderHead`）。
 5. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片。
 6. **多组学验证**：肾癌切片（基因+蛋白双组学）。
 5. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。
