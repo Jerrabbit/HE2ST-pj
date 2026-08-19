@@ -27,10 +27,12 @@ def build_model(num_genes: int = 313, variant: str = "baseline",
     """
     if variant == "improved":
         return UNI2MLPImproved(num_genes=num_genes, **kwargs)
-    if variant in ("local_global", "global_only", "local_only"):
-        n_files = {"local_global": 2, "global_only": 1, "local_only": 1}[variant]
+    if variant in ("local_global", "global_only", "local_only", "local_global_ln"):
+        n_files = {"local_global": 2, "global_only": 1, "local_only": 1,
+                   "local_global_ln": 2}[variant]
         dim = in_dim or FEATURE_DIM * n_files
-        return LocalGlobalMLP(num_genes=num_genes, in_dim=dim, l1=l1, l2=l2, **kwargs)
+        return LocalGlobalMLP(num_genes=num_genes, in_dim=dim, l1=l1, l2=l2,
+                              norm_concat=(variant == "local_global_ln"), **kwargs)
     return UNI2MLP(num_genes=num_genes, **kwargs)
 
 

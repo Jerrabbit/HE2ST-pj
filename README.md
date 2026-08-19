@@ -14,7 +14,7 @@ HE2ST-pj/
 ├── common/        # 所有方法共用模块（数据预处理、特征、模型、评估、工具）
 ├── methods/       # 每个方法一个独立文件夹（12 种方法）
 │   └── uni2_mlp/  #   UNI2+MLP 基线 + Local-Global 双尺度改进
-├── scripts/       # 统一入口：train / test / 特征提取（extract_*）
+├── scripts/       # 统一入口：train / test / 特征提取（extract_*） / sweep
 └── tests/         # 单元测试
 ```
 
@@ -39,21 +39,94 @@ conda activate myenv
 python -m pytest tests/ -v
 ```
 
-## 状态（2026-08-16 更新）
+---
 
-- **12 种方法全部实现**（BLEEP、Phoenix、Path2Space、SpatialEx、Pixel2Gene、GHIST、ST-Net、
-  Hist2ST、DeepPT、SQUALL、STFlow、UNI2+MLP），各带独立文件夹 + 统一 harness。阻塞项详见各
-  `methods/<name>/README.md`。
-- **"编码器冻结、MLP 训练"原则已确立**（用户明确）：据此 ST-Net / BLEEP 的基准结果改用
-  **冻结编码器版**（ST-Net 0.2386、BLEEP 0.2131），微调版仅作参考（见下）。
-- **Path2Space 重训 ✅ 完成**：冻结 CTransPath（官方 ctranspath.pth）+ 训练官方 MLP 头
-  （`methods/path2space` 可训练版 `Path2SpaceMLP`）。正式 rep1→rep2 **PCC 0.2780**
-  （冻结 154-MLP 集成 0.0411 → 训练头 0.2780，见下）。
-- **Local-Global 双尺度模块已实现**（单次 forward token 复用，2026-08-17 重构）：
-  `methods/uni2_mlp/local_global.py` 已就绪，`op1 sweep` 进行中（见下）。
+## Local-Global 双尺度实验（核心创新，✅ 完成）
+
+**目标**：回答研究问题 2——Local 与 Global 信息是否互补，以及如何以简单方式同时利用两者。
+
+### 方法设计
+
+架构：`concat[UNI2(op1 放缩中心) CLS, UNI2 中心 patch token 复用(op2)] → MLP`
+
+- **op1（Global branch）**：以目标细胞为中心取 l1×l1 图像块，resize 到标准 224×224，用 UNI2 提 [CLS] 特征——负责 tissue architecture、microenvironment。
+- **op2（Local branch）**：**复用 op1 同一次 forward 的 patch token 网格**——UNI2 patch14 无重叠，224×224 一次 forward 出 16×16=256 个 patch token；中心裁剪 l2=14k 正对应该网格中心 k×k 子块，取子块 token 的 mean-pool 作为 Local 特征——负责 morphology、nucleus、cell neighborhood。
+
+**关键约束：只做一次 forward**。Local 分支不做"裁剪→resize→再提"的二次 forward，而是从 Global 的 token 序列直接切出中心子块——op2 sweep 的全部 l2 值（28..112）免费复用同一份 token，**提取成本为零**。实现：`extract_tokens()` 返回 (B, 265, 1536) 全序列（1 CLS + 8 reg + 256 patch，timm `_pos_embed` 顺序已核实），`center_patch_tokens(k)` 切中心 k×k；`--stage local` 单次提取产出全部 l2 文件。
+
+预测头为统一 MLPHead（3072→512→256→313，`local_global` 变体）。编码器 UNI2 冻结，仅 MLP 训练。
+
+### 实验设置
+
+- **数据**：相邻切片泛化情形 rep1（训练，164k cell）→ rep2（测试，111k cell），MPP 统一。
+- **归一化**：`log1p_zscore`（统计量只在训练集拟合，测试集复用防泄漏）。
+- **调参**：每配置 30 epoch + val_PCC patience=10 早停，取 best val_PCC 绘曲线；最终 50 epoch + 早停报告全量指标。
+- **流程**：op1 sweep（只测 Global）→ op2 sweep（固定 best l1，Global+Local）→ 最终训练 → 消融。
+
+### op1 sweep：Global 视野调参（PCC vs l1）
+
+l1 从 **448 缩到 28、步长 28**（共 16 档），只测 Global（`--variant global_only`），每 l1 提取 Global 特征 + 30ep 训练取 best val_PCC。
+
+![op1 sweep 曲线](local_global_op1_sweep.png)
+
+| l1 | 448 | 420 | 392 | 364 | 336 | 308 | 280 | 252 | 224 | 196 | 168 | 140 | **112** | 84 | 56 | 28 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| val_PCC | 0.3105 | 0.3131 | 0.3154 | 0.3177 | 0.3201 | 0.3208 | 0.3240 | 0.3264 | 0.3290 | 0.3313 | 0.3333 | 0.3356 | **0.3365** | 0.3356 | 0.3182 | 0.2750 |
+
+**结论**：PCC–l1 曲线为**倒 U 型**，峰值 **l1=112（0.3365）**，比标准 224 基线（0.3245）高 **+0.012**；过大（>140）或过小（<84）均下降。Global 分支最优视野 ≈ **40.7 µm**（l1=112 × 2.7488 px/µm）。**best l1=112**。
+
+### op2 sweep：Local 视野调参（PCC vs l2，固定 l1=112）
+
+l2 = 28, 42, 56, 70, 84, 98, 112（= 中心 k×k token 子块，k=2..8，单次 forward token 复用）。`--variant local_global`，特征 = concat[X_uni2_g112, X_uni2_l{l2}]。
+
+![op2 sweep 曲线](local_global_op2_sweep.png)
+
+| l2 | 28 | 42 | **56** | 70 | 84 | 98 | 112 |
+|---|---|---|---|---|---|---|---|
+| val_PCC | 0.3718 | 0.3718 | **0.3727** | 0.3697 | 0.3671 | 0.3639 | 0.3601 |
+
+**结论**：同样为**倒 U 型**，峰值 **l2=56（0.3727）**；扩展测试（28/42 两档）确认 56 是最佳——Local 视野过小（28/42，只含 ~1 个核）或过大（≥70）均下降。**best l2=56**（中心 4×4=16 个 patch token 的 mean-pool）。加入 Local 分支后 PCC 0.3365→0.3727，**+0.036**。
+
+### 最终训练（best l1=112 + l2=56，50ep + 早停）
+
+早停于 epoch 18（best val_PCC 0.3713）。rep1→rep2 全量测试指标：
+
+| PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC |
+|---|---|---|---|---|---|
+| **0.3712** | 0.3071 | 0.5387 | 0.5882 | 0.6298 | 0.7592 |
+
+vs UNI2+MLP 基线（0.3245）：**+0.047**。
+
+### 消融实验（固定 best l1=112、l2=56）
+
+| 配置 | 特征 | PCC | SPCC | Top-50 | AUROC |
+|---|---|---|---|---|---|
+| Global-only | 仅 l1=112 CLS | 0.3366 | 0.2908 | 0.5794 | 0.7437 |
+| **Local+Global**（concat） | l1=112 + l2=56 | **0.3712** | 0.3071 | 0.5882 | 0.7592 |
+| **Local-only** | 仅 l2=56 | **0.3732** | 0.3098 | 0.5901 | 0.7624 |
+
+**消融结论**：**Local 分支主导**（Local-only 0.3732 ≈ Local+Global 0.3712，Global 的 CLS 几乎无增量）。原因：中心 token 经自注意力已携带全局上下文（单次 forward 设计固有属性），Local 特征实为"局部区域 + 全局上下文"，与 CLS 高度冗余。这也说明 **Local 信息的价值主要在于更精准的局部形态（morphology/nucleus），Global 视野带来的上下文在 CLS 与中心 token 中均已覆盖**。
+
+### 补充变体
+
+- **concat + LayerNorm**（`local_global_ln`，在 concat 输入上加 LayerNorm）：best val_PCC **0.3724** ≈ concat 版 0.3713，**无提升** → 按约定不再使用。
+
+### 小结
+
+Local+Global 双尺度在相邻切片基准上 **0.3245 → 0.3712（+0.047）**，全部来自**特征表示**（追加 Local 视野），模型仍是同一 MLP——再次印证项目主线 **"性能提升主要来源于更有效的信息表示，而非复杂的空间建模结构"**。调参数据见 `scripts/sweep.py`，曲线数据存于远程 `outputs/sweep_op1/op1_results.csv`、`outputs/sweep_op2*/op2_results.csv`。
+
+---
+
+## 状态（2026-08-20 更新）
+
+- **12 种方法全部有最终合规结果** + **Local-Global 核心创新完成**（见上节）。
+- **"编码器冻结、MLP 训练"原则已确立**（用户明确）：据此 ST-Net / BLEEP 的基准结果改用**冻结编码器版**（ST-Net 0.2386、BLEEP 0.2131），微调版仅作参考（见下）。
+- **Path2Space 重训 ✅ 完成**：冻结 CTransPath（官方 ctranspath.pth）+ 训练官方 MLP 头。正式 rep1→rep2 **PCC 0.2780**。
+- **SQUALL 官方解码器头 ✅ 完成**：冻结 token（196×1024）→ 训练 TransformerDecoder 头 = **0.3281**（vs 统一 MLP 0.2812）。
+- **Pixel2Gene cell 官方 ForwardSum 头 ✅ 完成**：log1p 空间 **0.2913**（zscore 0.2699；统一 MLP 版 0.3085 作参考）。
 - 相邻切片基准（rep1 训练 → rep2 测试）结果见下节；之后进行三层次泛化评测。
 
-## 相邻切片基准结果（rep1 → rep2，2026-08-16 更新）
+## 相邻切片基准结果（rep1 → rep2，2026-08-20 更新）
 
 协议：50 epoch + val_PCC patience=10 早停（取 best 模型），lr=1e-3，AdamW，
 `log1p_zscore` 归一化（统计量只在训练集拟合，测试集复用，防泄漏），统一评估（PCC/SPCC
@@ -66,7 +139,7 @@ python -m pytest tests/ -v
 
 | 方法 | 编码器 | PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| **UNI2+MLP Local+Global**（改进） | UNI2 冻结 | **0.3712** | 0.3071 | 0.539 | 0.588 | 0.630 | 0.759 | l1=112+l2=56，核心创新 |
+| **UNI2+MLP Local+Global**（改进） | UNI2 冻结 | **0.3712** | 0.3071 | 0.539 | 0.588 | 0.630 | 0.759 | l1=112+l2=56，核心创新（见上节） |
 | **SQUALL**（官方解码器头） | 冻结 555M | 0.3281 | 0.2873 | 0.507 | 0.572 | 0.623 | 0.742 | token(196×1024)→训练 TransformerDecoder；头更强可利用 token 结构 |
 | **UNI2+MLP**（基线） | UNI2 冻结 | 0.3245 | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
 | **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头（UNI2 特征版；ResNet50 忠实版 0.2628 见下） |
@@ -74,19 +147,37 @@ python -m pytest tests/ -v
 | **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
 | **SQUALL**（统一 MLP） | 冻结 555M | 0.2812 | 0.2581 | 0.481 | 0.560 | 0.622 | 0.715 | 0-1 输入修复后复核值 |
 | **Path2Space**（重训训练头） | CTransPath 冻结 | 0.2780 | 0.2555 | 0.476 | 0.561 | 0.625 | 0.714 | 训练官方 MLP 头适配 per-cell（见下） |
-| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.2699 | 0.2600 | 0.465 | 0.541 | 0.629 | 0.718 | 官方 ForwardSum 头（384-d 适配）；统一 MLP 版 0.3085 作参考 |
+| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.2913 | 0.2687 | 0.497 | 0.551 | 0.551 | 0.720 | 官方 ForwardSum 头 **log1p 空间**（zscore 0.2699）；统一 MLP 版 0.3085 作参考 |
 | **ST-Net**（冻结 DenseNet） | DenseNet 冻结 | 0.2386 | 0.2318 | 0.457 | 0.545 | 0.620 | 0.694 | 微调版 0.3619 仅作参考 |
+| **Hist2ST**（官方配置） | 从头 | 0.2139 | 0.2046 | 0.431 | 0.531 | 0.611 | 0.670 | 独立协议（见下），统一协议下不收敛 |
 | **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.440 | 0.525 | 0.601 | 0.666 | 微调版 0.3235 仅作参考 |
 | Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.379 | 0.510 | 0.622 | 0.644 | spot 内异质性封顶 |
 | Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.409 | 0.474 | 0.539 | 0.592 | 官方 FlowTransformerModel |
 | Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 313 基因适配有限 |
 | STFlow | 流模型 | 0.0847 | 0.0697 | 0.302 | 0.422 | 0.533 | 0.552 | whole-slide flow matching |
 | Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.148 | 0.323 | 0.432 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
-| Hist2ST（官方配置） | 从头 | 0.2139 | 0.2046 | 0.431 | 0.531 | 0.611 | 0.670 | 独立协议（见下），统一协议下不收敛 |
 
 > 统一协议：50ep + 早停 + log1p_zscore（统计量仅在训练集拟合）。Hist2ST 为**独立协议**
-> （官方 100ep + lr1e-5 + ZINB + bake 自蒸馏），故单独一行不参与统一协议排序。全部原始
-> 数值见各 `outputs/bench_*/test_results.json`。
+> （官方 100ep + lr1e-5 + ZINB + bake 自蒸馏），故单独一行不参与统一协议排序。Pixel2Gene
+> cell 的 log1p 版（0.2913）为官方 ForwardSum 头在正数目标空间的结果；是否入主表待定
+> （见"Pixel2Gene 呈现"）。全部原始数值见各 `outputs/bench_*/test_results.json`。
+
+### Pixel2Gene cell：官方 ForwardSum 头 vs 统一 MLP 头（2026-08-20）
+
+同特征（HIPT ViT-256 per-cell 384-d CLS）下，官方头与统一 MLP 头对比：
+
+| 头 | 归一化空间 | PCC | 说明 |
+|---|---|---|---|
+| 统一 MLPHead | log1p_zscore | **0.3085** | 线性输出，无约束 |
+| 官方 ForwardSum（ELU 输出） | log1p_zscore | 0.2699 | ELU(0.01,0.01) 输出≥0 与 zscore 负值目标冲突 |
+| 官方 ForwardSum（ELU 输出） | **log1p** | 0.2913 | 正数目标下激活兼容，+0.021 |
+
+**原因**：官方头 `net_out` 的 ELU(0.01,0.01) 输出层在 zscore 负值目标下被 0.01 地板截断
+（同类机制：Path2Space `MLP_regression_relu_two` 的 ReLU 输出）。换 log1p 正数目标后
+兼容性修复但仍低于 MLP（0.2913 vs 0.3085）：① log1p 目标极度零膨胀，ELU 无法输出精确 0
+（负半轴梯度 0.01·exp(x) 消失）且带 +0.01 偏置，对零值系统性高估；② MLPHead 每层
+BatchNorm+Dropout、首层加宽 512，官方头无归一化且立即瓶颈到 256；③ 官方头按 spot 级
+576-d 特征调参。**结论：官方头忠实但不如统一 MLP，属"头适配任务分布"问题，非表示差距。**
 
 ### Path2Space 重训（✅ 完成，正式 rep1→rep2）
 
@@ -146,70 +237,27 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 | BLEEP（微调 resnet50） | 0.3235 | 0.283 | 0.560 | 0.732 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
 | UNI2+MLP improved（仅改 MLP） | 0.3248 | 0.284 | 0.576 | 0.736 | ≈ 基线 0.3245 → MLP 结构改进无收益，提升来自表示而非结构 |
 
-## 当前进度（2026-08-18）
-
-### 已完成
-
-- **12 种 benchmark 方法全部有最终合规结果**（见上表）；批任务全部收尾：
-  Hist2ST 官方 **0.2139**、BLEEP 全量 **0.3235**、Path2Space 正式 **0.2780**、
-  SQUALL 0-1 复核 **0.2812**、DeepPT ResNet50 忠实版 **0.2628**（见 DeepPT 章节）。
-- **GHIST 数据管线** ✅ 完成：Xenium 核多边形 → HE 像素核分割 mask（精确 2D 仿射，
-  残差 <0.5px，对齐 <2px），`data/ghist_rep1/rep2`（164000/111345 核）；tiling 训练
-  （官方 256×256 patch, overlap 30）已跑通。
-
-### 运行中
-
-- **Local+Global 最终训练 + 消融**：best l1=112 + l2=56，50ep 完整指标（PCC/SPCC/
-  Top-k/AUROC）+ 消融（Global-only / Local-only / Local+Global）。
-
-### 已完成补充
-
-- **op2 sweep ✅ 完成**：固定 l1=112，完整 l2 曲线为**倒 U 型**（28:0.3718 / 42:0.3718 /
-  **56:0.3727 峰值** / 70:0.3697 / 84:0.3671 / 98:0.3639 / 112:0.3601）。**best l2=56**，
-  扩展测试（28/42）确认 56 是最佳——Local 视野过小（28/42）或过大（≥70）均下降。
-  曲线见 `outputs/sweep_op2/` 与 `outputs/sweep_op2_ext/`。
-- **Local+Global 最终训练 + 消融 ✅ 完成**（50ep，best l1=112 + l2=56）：
-
-  | 配置 | PCC | SPCC | Top-50 | AUROC |
-  |---|---|---|---|---|
-  | Global-only（l1=112） | 0.3366 | 0.291 | 0.579 | 0.744 |
-  | **Local+Global**（concat） | **0.3712** | 0.307 | 0.588 | 0.759 |
-  | **Local-only**（l2=56） | **0.3732** | 0.310 | 0.590 | 0.762 |
-
-  **消融结论**：Local 分支主导（Local-only ≈ Local+Global，Global 的 CLS 几乎无增量）。
-  原因：中心 token 经自注意力已携带全局上下文（单次 forward 设计固有属性），Local 特征
-  实为"局部区域 + 全局上下文"，CLS 与其冗余。最终成绩 **Local+Global 0.3712**
-  （vs 基线 0.3245，+0.047）。
-
-### 已完成补充
-
-- **op1 sweep ✅ 完成（16 个 l1 全跑完）**：PCC-l1 曲线为**倒 U 型**，峰值 **l1=112
-  （0.3365）**，比标准 224 基线（0.3245）高 +0.012；过大（>140）或过小（<84）均下降。
-  结论：Global 分支最优视野 ≈40.7 µm（l1=112）。曲线见 `outputs/sweep_op1/op1_curve.png`。
-- **STFlow 实现校验 ✅ 完成**：见上文 STFlow 归因专节（log1p 空间 Top50 HVG 0.2569）。
-
-### 已完成补充
-
-- **GHIST** ✅ 完成：训练（best val_PCC 0.3164@ep28）+ 正式测试 **PCC 0.3164**
-  （修复 ref_expr 传递 bug 后与训练一致）；从零训练的整片图方法追平 UNI2 特征系。
-- **STFlow Top50 HVG 校验** ✅：全 313 基因 0.0847 → **Top50 HVG 0.1846**，
-  基因集是低分主因之一，但距论文 0.3-0.4 仍有差距（继续查归一化空间/数据粒度）。
-
 ## 关键结论信号
 
-1. **"编码器冻结、MLP 训练"下 UNI2+MLP（0.3245）领先**：简单 Foundation 特征 + 可训练头，
-   超过冻结的领域模型（ST-Net 冻结 0.239、BLEEP 冻结 0.213、Path2Space 冻结 0.04）。
-2. **编码器微调是 ST-Net / BLEEP 高分的唯一来源**：ST-Net 0.362→0.239（−0.12）、BLEEP
+1. **Local-Global 双尺度 0.3245 → 0.3712（+0.047），全部来自表示**：模型仍是同一 MLP，
+   仅追加 Local 视野特征（token 复用，零额外 forward）；消融显示 **Local 分支主导**
+   （Local-only 0.3732 ≈ Local+Global，Global 的 CLS 几乎无增量）→ **"表示 > 结构"最直接证据**。
+2. **"编码器冻结、MLP 训练"下 UNI2+MLP（0.3245）领先复杂模型**：简单 Foundation 特征 +
+   可训练头，超过冻结的领域模型（ST-Net 冻结 0.239、BLEEP 冻结 0.213、Path2Space 冻结 0.04）。
+3. **编码器微调是 ST-Net / BLEEP 高分的唯一来源**：ST-Net 0.362→0.239（−0.12）、BLEEP
    0.3235→0.213。公平对比（编码器冻结）下简单方法领先 → 支持"性能来自表示而非微调"。
-3. **Path2Space 冻结不迁移、训练头可迁移**：冻结集成无论 Macenko / 大上下文 / 空间平滑
+4. **Path2Space 冻结不迁移、训练头可迁移**：冻结集成无论 Macenko / 大上下文 / 空间平滑
    都 ~0.02；换成**训练**官方 MLP 头后同切片 **0.27+**。说明低分是"冻结模型无法适配
    per-cell 目标"，不是 CTransPath 特征差。
-4. **UNI2+MLP improved（仅改 MLP）= 0.3248 ≈ 基线 0.3245**：MLP 架构改进无收益 →
-   提升主要来自表示（Representation）而非模型结构；下一步核心是 Local-Global 双尺度输入。
-5. **Pixel2Gene cell 级（0.309）显著高于 spot 级（0.169）**：per-cell 特征克服了 spot 内
+5. **UNI2+MLP improved（仅改 MLP）= 0.3248 ≈ 基线 0.3245**：MLP 结构改进无收益 →
+   提升主要来自表示（Representation）而非模型结构。
+6. **Pixel2Gene cell 级（0.29-0.31）显著高于 spot 级（0.169）**：per-cell 特征克服了 spot 内
    异质性封顶。
+7. **官方预测头不一定优于统一 MLP**：Pixel2Gene ForwardSum（log1p 0.2913）、Path2Space
+   ReLU 头（0.2780 重训后）都低于同特征下无约束线性输出的统一 MLP——官方头按原任务分布
+   调参，换 per-cell 回归后头需重新匹配（再次支持"表示 > 架构"）。
 
-## 方法实现清单与忠实度分析（2026-08-16）
+## 方法实现清单与忠实度分析（2026-08-20 更新）
 
 > 统一训练协议：50 epoch + val_PCC patience=10 早停（取 best），lr=1e-3，AdamW，
 > `log1p_zscore` 归一化（统计量只在训练集拟合）。特例方法（Hist2ST/Phoenix/STFlow/
@@ -219,14 +267,15 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 | 方法 | 架构 | 编码器 | 头部/模型 | 官方忠实度 | PCC | 指标评估 |
 |---|---|---|---|---|---|---|
 | **UNI2+MLP**（基线） | 特征回归 | UNI2 冻结（1536-d CLS） | 统一 MLPHead 1536→512→256→313 | 本仓库基线 | **0.3245** | 合理，作为对比基准 |
+| **UNI2+MLP Local+Global**（改进） | 特征回归 | UNI2 冻结 | concat[Global CLS, Local 中心 token]→统一 MLPHead 3072→512→256→313 | 本仓库创新（token 复用单次 forward） | **0.3712** | 核心创新（见上节），+0.047 |
 | **DeepPT** | 特征回归 | UNI2 冻结 | AE(1536→512)+官方 `MLP_regression`（Linear→Dropout→Linear） | ✅ 官方头原样；AE 为单细胞适配 | 0.3206 | 合理 |
-| **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.3085 / 0.169 | cell 级合理，spot 级受异质性封顶 |
+| **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.2913 / 0.169 | cell 级合理（log1p 空间），spot 级受异质性封顶 |
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
-| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 统一 MLP（官方 TransformerDecoder 头待训，task #18） | ⚠️ 移植（未用官方解码器） | 0.2812 | 冻结解码器不迁移（~0.02），训练头合理；0-1 输入修复后复核值 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 官方解码器头训练版 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
-| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 全基因低分因基因集+粒度：Top50 HVG 校验 **0.257（log1p 空间）**，论文 0.3-0.4 差距来自 per-cell vs spot（见下） |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 全基因低分因基因集+粒度：Top50 HVG 官方配置校验 **0.3626**，论文 0.3-0.4 |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
 | **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
@@ -234,19 +283,20 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 ### 忠实度与指标评估要点
 
 1. **特征回归类方法（UNI2+MLP / DeepPT / Pixel2Gene / SpatialEx / SQUALL / Path2Space）**
-   均以**冻结的 Foundation 特征**为输入、训练各自头部——结构最忠实、指标 0.21-0.32，反映"表示 + 简单头"的力量。
+   均以**冻结的 Foundation 特征**为输入、训练各自头部——结构最忠实、指标 0.21-0.33，反映"表示 + 简单头"的力量。
 2. **编码器微调类（ST-Net / BLEEP）**：官方架构本身微调编码器；按项目"冻结原则"改用 `--no_finetune`
    （0.239 / 0.213）。微调版（0.362 / 0.324）作为"微调增益"的参考证据，不计入合规表。
 3. **生成式方法（Phoenix / STFlow）**：忠实复现官方流匹配架构，但**生成式采样不适合 per-cell 回归**，
    指标 0.08-0.15 属方法性质使然（与基线同特征对比：UNI2+MLP 0.32 vs STFlow 0.08）。
 4. **从头学习方法（Hist2ST / GHIST）**：无预训练特征，统一协议下难收敛（Hist2ST null），
-   官方配置重训才有学习（**0.2139**）；GHIST 因需核分割+细胞型管线尚未运行。
+   官方配置重训才有学习（**0.2139**）；GHIST 因核分割 + 整片 tiling 数据管线（官方 256×256
+   patch + overlap 30）已跑通，从零训练追平 UNI2 特征系（**0.3164**）。
 5. **Path2Space**：冻结 154-MLP 集成在 Xenium per-cell 上 ~0.02-0.04（spot 级训练目标不迁移）；
    **重训**官方 MLP 头（冻结 CTransPath）后正式 rep1→rep2 **0.2780**。
 6. **SQUALL**：官方解码器推理（`forward_rgb_to_expr` → 15757 基因）在 per-cell 上 ~0.02
-   （解码器输出近常量，不迁移）；冻结 555M 编码器特征 + 训练统一 MLP = **0.2812**
-   （0-1 输入修复后复核值）才是有效表示。
-   注：早期特征提取误用 0-255 输入（官方教程为 0-1），冻结特征基线待用 0-1 复核。
+   （解码器输出近常量，不迁移）；冻结 555M 编码器特征 + **训练官方 TransformerDecoder 头** =
+   **0.3281**（token 级信息被更强头利用）。早期特征提取误用 0-255 输入（官方教程为 0-1），
+   已用 0-1 复核。
 
 ## 数据预处理与评估统一流程（公平性保障）
 
@@ -292,18 +342,20 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 按优先级：
 
-1. **Local+Global 双尺度正式实验**（收尾中）：~~op1 sweep~~ ✅（best l1=112, 0.3365）、
-   ~~op2 sweep~~ ✅（best l2=56, 0.3727）→ **最终 50ep 完整指标 + 消融进行中**
-   （Global-only / Local-only / Local+Global）。
+1. ~~Local+Global 双尺度正式实验~~ ✅ 完成：op1 sweep（best l1=112, 0.3365）→ op2 sweep
+   （best l2=56, 0.3727）→ 最终 50ep **0.3712** → 消融（Local-only 0.3732 主导）→
+   lg_ln 变体（无提升，弃用）。曲线见 `local_global_op1_sweep.png` / `local_global_op2_sweep.png`。
 2. ~~GHIST 训练收尾~~ ✅ 完成：**PCC 0.3164**（已补基准表）。
-3. ~~STFlow 实现校验~~ ✅ 完成：log1p 空间 Top50 HVG **0.2569**（见归因专节）。
-4. **官方预测头补齐**（用户原则：官方有头不换统一 MLP）：
-   - ~~Pixel2Gene cell 级改用官方 ForwardSumModel~~ ✅ 完成（PCC 0.2699）；
-   - **SQUALL 官方 TransformerDecoder 头训练**（`--save_tokens` → `SQUALLDecoderHead`）。
-5. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片。
-6. **多组学验证**：肾癌切片（基因+蛋白双组学）。
-5. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。
-6. 同步更新 README/CLAUDE.md 与 GitHub。
+3. ~~STFlow 实现校验~~ ✅ 完成：官方配置（log1p+zinb）Top50 HVG **0.3626**（见归因专节）。
+4. ~~官方预测头补齐~~ ✅ 完成（用户原则：官方有头不换统一 MLP）：
+   - ~~Pixel2Gene cell 级改用官方 ForwardSumModel~~ ✅（log1p 空间 0.2913）；
+   - ~~SQUALL 官方 TransformerDecoder 头训练~~ ✅（0.3281）。
+5. **Pixel2Gene cell 呈现决策**：官方 ForwardSum 头 log1p 版（0.2913）vs 统一 MLP 版
+   （0.3085）如何入表（当前主表用 0.2913，MLP 0.3085 作参考）。
+6. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片。
+7. **多组学验证**：肾癌切片（基因+蛋白双组学）。
+8. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。
+9. 同步更新 README/CLAUDE.md 与 GitHub。
 
 ## Hist2ST 收敛失败说明
 
@@ -321,10 +373,9 @@ top100 0.611 / AUROC 0.670**。证明统一协议 null 的根因是**协议**（
 特征下无法收敛），而非架构本身——但即便如此，从头学方法（0.21）仍远低于简单
 Foundation 特征方法（UNI2+MLP 0.32），再次支持"表示 > 架构/训练技巧"。
 
-## 同步状态（2026-08-16）
+## 同步状态（2026-08-20）
 
-- **GitHub main = `977bdf4`**，已包含全部最新代码（冻结变体、Hist2ST bake、Path2Space
-  可训练版、并行特征提取、Local+Global 双尺度框架、README）；本地工作区干净。
-- **远程代码 = 本地**（含 GHIST 实现、Path2Space 可训练版、并行提取脚本、Local+Global
-  框架；逐文件核对一致）。
-- 运行结果文件（`outputs/bench_*/`）不入库（gitignore），保存在远程。
+- **GitHub main**：以提交 `55fd080` 为最新基准，随后新增 README 重构 + 两条 sweep 曲线图
+  + `local_global_ln` 变体代码。
+- **远程代码 = 本地**：含全部方法、Local+Global 框架（lg_ln 变体）、并行提取脚本。
+- 运行结果文件（`outputs/bench_*/`、`outputs/sweep_*/`）不入库（gitignore），保存在远程。

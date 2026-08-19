@@ -64,6 +64,7 @@ class LocalGlobalMLP(nn.Module):
         dropout: float = 0.1,
         l1: int = 512,
         l2: int = 56,
+        norm_concat: bool = False,
     ):
         super().__init__()
         self.num_genes = int(num_genes)
@@ -72,7 +73,10 @@ class LocalGlobalMLP(nn.Module):
         if feature_files:
             self.feature_files = list(feature_files)
         self.head = MLPHead(in_dim, list(mlp_hidden_dims), self.num_genes, dropout)
+        # 对比变体：concat 后先 LayerNorm 再进 MLP（默认无，验证是否有增益）
+        self.norm_concat = norm_concat
+        self.norm = nn.LayerNorm(in_dim) if norm_concat else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """concat[Global, Local] 特征 (B, 1536*n_files) → (B, num_genes) 归一化表达预测。"""
-        return self.head(x)
+        return self.head(self.norm(x))
