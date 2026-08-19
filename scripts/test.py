@@ -91,6 +91,8 @@ def main() -> None:
 
     if getattr(model, "input_type", "patch") == "feature":
         feature_file = args.feature_file or getattr(model, "feature_file", None)  # 方法自带特征文件
+        if isinstance(feature_file, str) and "," in feature_file:
+            feature_file = [f.strip() for f in feature_file.split(",") if f.strip()]
         ds = FeatureDataset(args.test_dir, feature_path=feature_file,
                             gene_list=gene_list, gene_norm=args.gene_norm,
                             ref_stats=ref_stats)
