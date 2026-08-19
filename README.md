@@ -156,8 +156,14 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 ### 运行中
 
-- **Local+Global op2 sweep**：固定 best l1=112，l2=56/70/84/98/112（单次 forward
-  token 复用，零额外提取），每 l2 30ep 训练选 best val_PCC。
+- **Local+Global 最终训练 + 消融**：best l1=112 + l2=56，50ep 完整指标（PCC/SPCC/
+  Top-k/AUROC）+ 消融（Global-only / Local-only / Local+Global）。
+
+### 已完成补充
+
+- **op2 sweep ✅ 完成**：固定 l1=112，l2 单调下降（56:0.3727 → 112:0.3601），
+  **best l2=56（0.3727）**——Local 越聚焦越好。曲线见 `outputs/sweep_op2/op2_curve.png`。
+  **Local+Global 全流程结论：l1=112 + l2=56 = 0.3727**（vs 基线 0.3245，+0.048）。
 
 ### 已完成补充
 
@@ -270,9 +276,9 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 按优先级：
 
-1. **Local+Global 双尺度正式实验**（进行中）：~~op1 sweep~~ ✅ 完成（**best l1=112，
-   0.3365**，倒 U 型曲线）→ **op2 sweep 进行中**（l2=56~112，token 复用零提取）
-   → 最终 50ep 完整指标 + 消融（Global-only / Local-only / Local+Global）。
+1. **Local+Global 双尺度正式实验**（收尾中）：~~op1 sweep~~ ✅（best l1=112, 0.3365）、
+   ~~op2 sweep~~ ✅（best l2=56, 0.3727）→ **最终 50ep 完整指标 + 消融进行中**
+   （Global-only / Local-only / Local+Global）。
 2. ~~GHIST 训练收尾~~ ✅ 完成：**PCC 0.3164**（已补基准表）。
 3. ~~STFlow 实现校验~~ ✅ 完成：log1p 空间 Top50 HVG **0.2569**（见归因专节）。
 4. **官方预测头补齐**（用户原则：官方有头不换统一 MLP）：
