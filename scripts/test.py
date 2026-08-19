@@ -62,7 +62,7 @@ def main() -> None:
         build_kwargs["feat_dim"] = args.feat_dim or cfg.get("feat_dim")
     if args.method == "bleep" and args.pretrained_weights:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
-    if args.method in ("pixel2gene", "uni2_mlp") and args.variant:
+    if args.method in ("pixel2gene", "uni2_mlp", "squall") and args.variant:
         build_kwargs["variant"] = args.variant
     if args.method == "phoenix":
         if cfg.get("d_model") or args.d_model:
