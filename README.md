@@ -378,7 +378,9 @@ Foundation 特征方法（UNI2+MLP 0.32），再次支持"表示 > 架构/训练
 
 ## 同步状态（2026-08-20）
 
-- **GitHub main**：以提交 `55fd080` 为最新基准，随后新增 README 重构 + 两条 sweep 曲线图
-  + `local_global_ln` 变体代码。
-- **远程代码 = 本地**：含全部方法、Local+Global 框架（lg_ln 变体）、并行提取脚本。
+- **GitHub main = `da98f6c`**：包含全部方法代码 + Local+Global 框架（含 lg_ln 变体）、
+  README 完整文档（方法架构/协议/指标 + Local-Global 实验）、两条 sweep 曲线图、
+  重绘 benchmark 柱状图、`test_stflow.py` 的 prior/n_sample_steps 修复。
+- **远程代码 = 本地**：含全部方法、Local+Global 框架（lg_ln 变体）、并行提取脚本、
+  修复后的 `test_stflow.py`。
 - 运行结果文件（`outputs/bench_*/`、`outputs/sweep_*/`）不入库（gitignore），保存在远程。
