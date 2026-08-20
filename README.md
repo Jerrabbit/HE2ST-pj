@@ -142,19 +142,19 @@ Local+Global 双尺度在相邻切片基准上 **0.3245 → 0.3712（+0.047）**
 | **UNI2+MLP Local+Global**（改进） | UNI2 冻结 | **0.3712** | 0.3071 | 0.539 | 0.588 | 0.630 | 0.759 | l1=112+l2=56，核心创新（见上节） |
 | **SQUALL**（官方解码器头） | 冻结 555M | 0.3281 | 0.2873 | 0.507 | 0.572 | 0.623 | 0.742 | token(196×1024)→训练 TransformerDecoder；头更强可利用 token 结构 |
 | **UNI2+MLP**（基线） | UNI2 冻结 | 0.3245 | 0.2852 | 0.510 | 0.575 | 0.626 | 0.739 | 超 UNI1 基线 0.312 |
-| **DeepPT** | UNI2 冻结 | 0.3206 | 0.2834 | 0.507 | 0.577 | 0.629 | 0.738 | 官方 MLP_regression 头（UNI2 特征版；ResNet50 忠实版 0.2628 见下） |
 | **GHIST** | UNet 从头 | 0.3164 | 0.2952 | 0.500 | 0.525 | 0.516 | 0.700 | 官方 Framework（核 mask + 图），从零训练 |
 | **SpatialEx** | UNI2 冻结 | 0.2964 | 0.2686 | 0.493 | 0.561 | 0.616 | 0.727 | 超官方 SpatialEx(UNI1) 0.256 |
+| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.2913 | 0.2687 | 0.497 | 0.551 | 0.551 | 0.720 | 官方 ForwardSum 头 **log1p 空间**（zscore 0.2699）；统一 MLP 版 0.3085 作参考 |
 | **SQUALL**（统一 MLP） | 冻结 555M | 0.2812 | 0.2581 | 0.481 | 0.560 | 0.622 | 0.715 | 0-1 输入修复后复核值 |
 | **Path2Space**（重训训练头） | CTransPath 冻结 | 0.2780 | 0.2555 | 0.476 | 0.561 | 0.625 | 0.714 | 训练官方 MLP 头适配 per-cell（见下） |
-| **Pixel2Gene**（cell 级） | HIPT 冻结 | 0.2913 | 0.2687 | 0.497 | 0.551 | 0.551 | 0.720 | 官方 ForwardSum 头 **log1p 空间**（zscore 0.2699）；统一 MLP 版 0.3085 作参考 |
+| **DeepPT**（ResNet50 忠实版） | ResNet50-ImageNet | 0.2628 | 0.2478 | 0.470 | 0.556 | 0.624 | 0.707 | 官方特征 + 官方头（UNI2 特征版 0.3206 作参考，见 DeepPT 专节） |
 | **ST-Net**（冻结 DenseNet） | DenseNet 冻结 | 0.2386 | 0.2318 | 0.457 | 0.545 | 0.620 | 0.694 | 微调版 0.3619 仅作参考 |
 | **Hist2ST**（官方配置） | 从头 | 0.2139 | 0.2046 | 0.431 | 0.531 | 0.611 | 0.670 | 独立协议（见下），统一协议下不收敛 |
 | **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.440 | 0.525 | 0.601 | 0.666 | 微调版 0.3235 仅作参考 |
 | Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.379 | 0.510 | 0.622 | 0.644 | spot 内异质性封顶 |
 | Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.409 | 0.474 | 0.539 | 0.592 | 官方 FlowTransformerModel |
 | Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 313 基因适配有限 |
-| STFlow | 流模型 | 0.0847 | 0.0697 | 0.302 | 0.422 | 0.533 | 0.552 | whole-slide flow matching |
+| STFlow | 流模型 | 0.0933 | 0.1572 | 0.242 | 0.289 | 0.405 | 0.614 | log1p + zinb（官方默认）；gaussian 0.0847 作参考 |
 | Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.148 | 0.323 | 0.432 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
 
 > 统一协议：50ep + 早停 + log1p_zscore（统计量仅在训练集拟合）。Hist2ST 为**独立协议**
@@ -194,6 +194,9 @@ BatchNorm+Dropout、首层加宽 512，官方头无归一化且立即瓶颈到 2
 - **同切片验证**（rep2 分裂，80k/31k）：val_PCC **0.2725**，与跨切片 0.2780 一致。
 
 ### DeepPT ResNet50 忠实版（对比论文差异归因）
+
+> **主表取值**：ResNet50 忠实版 **0.2628**（官方特征 + 官方头，编码器冻结）；UNI2 特征版
+> 0.3206 仅作"表示"对比参考（不参与主表排序）。
 
 官方 DeepPT（Hoang 2024, Nature Cancer）用 **ResNet50-ImageNet → AE(2048→512) → 官方 MLP_regression(512→512→G)** 预测整片 bulk 表达。为对照
 SpatialEx 论文（其报告 DeepPT 在相同乳腺癌 Xenium 数据上 **~0.205**，低于 SpatialEx），
@@ -268,14 +271,14 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 |---|---|---|---|---|---|---|
 | **UNI2+MLP**（基线） | 特征回归 | UNI2 冻结（1536-d CLS） | 统一 MLPHead 1536→512→256→313 | 本仓库基线 | **0.3245** | 合理，作为对比基准 |
 | **UNI2+MLP Local+Global**（改进） | 特征回归 | UNI2 冻结 | concat[Global CLS, Local 中心 token]→统一 MLPHead 3072→512→256→313 | 本仓库创新（token 复用单次 forward） | **0.3712** | 核心创新（见上节），+0.047 |
-| **DeepPT** | 特征回归 | UNI2 冻结 | AE(1536→512)+官方 `MLP_regression`（Linear→Dropout→Linear） | ✅ 官方头原样；AE 为单细胞适配 | 0.3206 | 合理 |
+| **DeepPT** | 特征回归 | ResNet50-ImageNet | AE(2048→512)+官方 `MLP_regression`（Linear→Dropout→Linear） | ✅ 官方特征 + 官方头忠实版 | 0.2628 | 合理（官方忠实版；UNI2 特征版 0.3206 作参考，见专节） |
 | **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.2913 / 0.169 | cell 级合理（log1p 空间），spot 级受异质性封顶 |
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
 | **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 官方解码器头训练版 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后 |
 | **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
-| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0847 | 全基因低分因基因集+粒度：Top50 HVG 官方配置校验 **0.3626**，论文 0.3-0.4 |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0933 | **log1p + zinb（官方默认）**（gaussian 0.0847 作参考）；Top50 HVG 官方配置 **0.3626**，论文 0.3-0.4 |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
 | **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
@@ -287,7 +290,7 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 2. **编码器微调类（ST-Net / BLEEP）**：官方架构本身微调编码器；按项目"冻结原则"改用 `--no_finetune`
    （0.239 / 0.213）。微调版（0.362 / 0.324）作为"微调增益"的参考证据，不计入合规表。
 3. **生成式方法（Phoenix / STFlow）**：忠实复现官方流匹配架构，但**生成式采样不适合 per-cell 回归**，
-   指标 0.08-0.15 属方法性质使然（与基线同特征对比：UNI2+MLP 0.32 vs STFlow 0.08）。
+   指标 0.09-0.15 属方法性质使然（与基线同特征对比：UNI2+MLP 0.32 vs STFlow 0.09）。
 4. **从头学习方法（Hist2ST / GHIST）**：无预训练特征，统一协议下难收敛（Hist2ST null），
    官方配置重训才有学习（**0.2139**）；GHIST 因核分割 + 整片 tiling 数据管线（官方 256×256
    patch + overlap 30）已跑通，从零训练追平 UNI2 特征系（**0.3164**）。
@@ -350,8 +353,8 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 4. ~~官方预测头补齐~~ ✅ 完成（用户原则：官方有头不换统一 MLP）：
    - ~~Pixel2Gene cell 级改用官方 ForwardSumModel~~ ✅（log1p 空间 0.2913）；
    - ~~SQUALL 官方 TransformerDecoder 头训练~~ ✅（0.3281）。
-5. **Pixel2Gene cell 呈现决策**：官方 ForwardSum 头 log1p 版（0.2913）vs 统一 MLP 版
-   （0.3085）如何入表（当前主表用 0.2913，MLP 0.3085 作参考）。
+5. ~~Pixel2Gene cell 呈现决策~~ ✅ 已定：主表用官方 ForwardSum 头 **log1p 版 0.2913**，
+   统一 MLP 版 0.3085 作参考。
 6. **三层次泛化评测**：同切片左右半 → 相邻切片（MPP 统一）→ 同癌种多切片。
 7. **多组学验证**：肾癌切片（基因+蛋白双组学）。
 8. **跨癌种验证**：结直肠/肺癌/卵巢训练 → 乳腺癌测试。

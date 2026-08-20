@@ -35,10 +35,13 @@ def main() -> None:
     gene_norm = config.get("gene_norm", "log1p_zscore")
     stats = config.get("stats")
 
-    model = STFlow(num_genes=num_genes)
+    model = STFlow(num_genes=num_genes,
+                   prior=config.get("prior", "gaussian"),
+                   n_sample_steps=config.get("n_sample_steps", 20))
     model.load_state_dict(ckpt["model"])
     model.to(args.device)
-    print(f"[STFlow] 加载 best.pt: num_genes={num_genes} gene_norm={gene_norm}",
+    print(f"[STFlow] 加载 best.pt: num_genes={num_genes} gene_norm={gene_norm} "
+          f"prior={model.prior} n_sample_steps={model.n_sample_steps}",
           flush=True)
 
     results = evaluate_slide(model, args.test_dir, gene_norm, stats,
