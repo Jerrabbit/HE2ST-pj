@@ -23,38 +23,30 @@ for rep in 1 2; do
 done
 
 # ---------- 2. UNI2 特征（X_uni2.npy，UNI2 权重在 cpfs） ----------
+# 快路径：extract_local_global --stage global --l1 256 == UNI2 on 256×256 中心 patch
+# （resize 224 → CLS），但直接从 HE 图分块裁剪+并行，避免 np.stack 16 万张 PNG 的慢 IO。
 for rep in 1 2; do
   OUT=data/rep$rep/X_uni2.npy
   if [ ! -f "$OUT" ]; then
-    say "[uni2] rep$rep ..."
-    python scripts/preprocess_he.py --rep "$rep" --stage features --data_dir "data/rep$rep" \
-      --output "$OUT" >> "$LOG" 2>&1 || { say "!! rep$rep uni2 失败"; exit 1; }
+    say "[uni2(快路径 l1=256)] rep$rep ..."
+    python scripts/extract_local_global.py --rep "$rep" --stage global --l1 256 \
+      --output "$OUT" --device cuda >> "$LOG" 2>&1 || { say "!! rep$rep uni2 失败"; exit 1; }
   else
     say "[uni2] rep$rep 已存在，跳过"
   fi
 done
 
-# ---------- 3. Local+Global Global 特征（X_uni2_g{l1}，op1 sweep 需要全集） ----------
-# 注意：X_uni2_l{l2}（Local）依赖裁剪源 l1，必须等过滤后 op1 sweep 确定 best l1
-# 再用该 l1 提取（sweep 的 _extract_local 会自动做），这里不预提取。
-L1S="448 420 392 364 336 308 280 252 224 196 168 140 112 84 56 28"
-for rep in 1 2; do
-  for l1 in $L1S; do
-    F=data/rep$rep/X_uni2_g$l1.npy
-    if [ ! -f "$F" ]; then
-      say "[lg-global] rep$rep l1=$l1 ..."
-      python scripts/extract_local_global.py --rep "$rep" --stage global --l1 "$l1" \
-        --output "$F" --device cuda >> "$LOG" 2>&1 || { say "!! rep$rep l1=$l1 失败"; exit 1; }
-    fi
-  done
-done
+# 注：X_uni2_g{l1}（Local+Global op1 sweep）不在此预提取——等过滤后 LG sweep 在
+# rep1_f/rep2_f 上按需提取（sweep._extract_global 自动做，从过滤后 metadata 裁剪）。
+# X_uni2_l{l2}（Local）依赖裁剪源 l1，由 op2 sweep 在定出 best l1 后提取。
 
 # ---------- 4. CTransPath ctx512（Path2Space，权重在 cpfs） ----------
+# extract_ctranspath_context.py 无 --data_dir：data_dir 由 --rep 推导（~/HE2ST-pj/data/rep{N}）
 for rep in 1 2; do
   OUT=data/rep$rep/X_ctranspath_ctx512.npy
   if [ ! -f "$OUT" ]; then
     say "[ctranspath] rep$rep ..."
-    python scripts/extract_ctranspath_context.py --rep "$rep" --data_dir "data/rep$rep" \
+    python scripts/extract_ctranspath_context.py --rep "$rep" \
       --output "$OUT" --device cuda >> "$LOG" 2>&1 || { say "!! rep$rep ctranspath 失败"; exit 1; }
   else
     say "[ctranspath] rep$rep 已存在，跳过"
@@ -85,8 +77,34 @@ for rep in 1 2; do
   fi
 done
 
-# ---------- 7. HIPT / SQUALL（权重缺失则跳过，到位后重跑） ----------
-say "[check] HIPT 权重: $([ -f weights/pixel2gene/vit_256_small_dino.pth ] && echo 有 || echo 缺)"
-say "[check] SQUALL 权重: $([ -f weights/squall/SQUALL_full.pth ] && echo 有 || echo 缺)"
+# ---------- 7. HIPT cell 特征（Pixel2Gene cell；权重到位后自动补） ----------
+if [ -f weights/pixel2gene/vit_256_small_dino.pth ]; then
+  for rep in 1 2; do
+    OUT=data/rep$rep/X_hipt_cell.npy
+    if [ ! -f "$OUT" ]; then
+      say "[hipt-cell] rep$rep ..."
+      python scripts/extract_hipt_cell.py --rep "$rep" \
+        --ckpt weights/pixel2gene/vit_256_small_dino.pth --device cuda >> "$LOG" 2>&1 \
+        || { say "!! rep$rep hipt-cell 失败"; exit 1; }
+    fi
+  done
+else
+  say "[skip] HIPT 权重缺失，跳过 X_hipt_cell.npy（Pixel2Gene cell）"
+fi
 
-say "==== 数据重建完成（未含 HIPT/SQUALL 特征）===="
+# ---------- 8. SQUALL 特征（解码器头；权重到位后自动补） ----------
+if [ -f weights/squall/SQUALL_full.pth ]; then
+  for rep in 1 2; do
+    OUT=data/rep$rep/X_squall_tokens.npy
+    if [ ! -f "$OUT" ]; then
+      say "[squall-tokens] rep$rep ..."
+      python scripts/extract_squall.py --rep "$rep" \
+        --ckpt weights/squall/SQUALL_full.pth --save_tokens --device cuda >> "$LOG" 2>&1 \
+        || { say "!! rep$rep squall 失败"; exit 1; }
+    fi
+  done
+else
+  say "[skip] SQUALL 权重缺失，跳过 X_squall_tokens.npy"
+fi
+
+say "==== 数据重建完成（$([ -f weights/pixel2gene/vit_256_small_dino.pth ] && echo 含HIPT || echo 缺HIPT)、$([ -f weights/squall/SQUALL_full.pth ] && echo 含SQUALL || echo 缺SQUALL)）===="
