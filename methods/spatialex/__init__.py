@@ -37,7 +37,12 @@ import torch.nn.functional as F
 from scipy import sparse
 from scipy.spatial import cKDTree
 
-from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
+from common.benchmark.harness import (
+    _invert_normalization,
+    compute_metrics_vectorized,
+    load_gene_names,
+    scalar_results,
+)
 from common.data.expression import load_expression, normalize_expression
 from common.data.slide_tiling import (
     build_hypergraph,
@@ -170,12 +175,14 @@ def _compute_metrics(
     y_pred: np.ndarray,
     gene_norm: str,
     stats: dict | None,
-    topk_ks: tuple = (10, 50, 100),
+    topk_ks: tuple | None = None,
+    details: bool = False,
 ) -> dict:
     """与 harness.evaluate 完全一致的指标计算（向量化，PCC/SPCC 归一化空间，Top-k/AUROC 逆变换 raw）。"""
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
-    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw, topk_ks)
+    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
+                                      topk_ks, details=details)
 
 
 def evaluate_slide(
@@ -185,14 +192,15 @@ def evaluate_slide(
     stats: dict | None,
     device: str = "cpu",
     output_dir: str = "outputs",
+    details: bool = False,
 ) -> dict:
     """整片超图推理 + 统一指标（与 harness.evaluate 语义一致）。
 
     对每个 ROI 做超图卷积预测；ROI 重叠处同一 cell 被多次预测，取各次预测的
     平均值作为最终预测（文档化约定：均值对重叠边界更平滑）。
 
-    返回并保存 {"PCC", "SPCC", "top10", "top50", "top100", "AUROC"} 到
-    output_dir/test_results.json。
+    返回并保存 {"PCC", "SPCC", "cell_PCC", "top10".."top100", "AUROC"} 到
+    output_dir/test_results.json。details=True 时额外返回逐基因数组与 _gene_names。
     """
     model.to(device)  # 保证模型与图/特征同设备（test_spatialex.py 从 CPU checkpoint 加载）
     model.eval()
@@ -212,10 +220,12 @@ def evaluate_slide(
     y_count[y_count == 0] = 1.0
     y_pred /= y_count[:, None]
 
-    results = _compute_metrics(expr_norm, y_pred, gene_norm, stats)
+    results = _compute_metrics(expr_norm, y_pred, gene_norm, stats, details=details)
+    if details:
+        results["_gene_names"] = load_gene_names(test_dir)
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, "test_results.json"), "w") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+        json.dump(scalar_results(results), f, ensure_ascii=False, indent=2)
     return results
 
 

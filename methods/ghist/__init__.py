@@ -24,7 +24,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
+from common.benchmark.harness import (
+    _invert_normalization,
+    compute_metrics_vectorized,
+    load_gene_names,
+    scalar_results,
+)
 from common.data.expression import load_expression, normalize_expression
 from .model import GHISTModel
 
@@ -139,10 +144,12 @@ def _predict_tiled(model, he, nuclei, ref_orig, device,
 @torch.no_grad()
 def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
                    device: str = "cuda", output_dir: str | None = None,
-                   ref_expr: np.ndarray | None = None) -> dict:
+                   ref_expr: np.ndarray | None = None,
+                   details: bool = False) -> dict:
     """整片推理 → 逐核表达 → 统一指标。
 
     ref_expr: avgexp 模式的参考表达（训练集 n_ref 细胞），None 时用测试集前 n_ref。
+    details=True 时额外返回逐基因数组与 _gene_names（供 CSV 导出）。
     """
     model = model.to(device)
     model.eval()
@@ -165,11 +172,14 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
     y_true_norm = expr_norm[:n_cells]
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats_used)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats_used)
-    results = compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw)
+    results = compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
+                                         details=details)
+    if details:
+        results["_gene_names"] = list(gene_names)
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, "test_results.json"), "w") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+            json.dump(scalar_results(results), f, ensure_ascii=False, indent=2)
     return results
 
 

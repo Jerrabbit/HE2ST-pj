@@ -7,9 +7,10 @@
 
 评估语义（与 HEST 通用 benchmark 一致）：
     - PCC / SPCC：逐基因（跨细胞）相关性，取均值
-    - Top-k：逐细胞，预测与真实 top-k 高表达基因的重合率，取均值
+    - cell_PCC：逐细胞（跨基因，log1p 计数空间）相关性，取均值
+    - Top-k：逐细胞，预测与真实 top-k 高表达基因的重合率，取均值（默认 k=10..100）
     - AUROC：逐基因，以 raw counts>0 为标签，取均值
-PCC/SPCC 在归一化空间（预测与真值同尺度，逐基因单调不变）；Top-k/AUROC
+PCC/SPCC/cell_PCC 在归一化空间（预测与真值同尺度，逐基因单调不变）；Top-k/AUROC
     按 gene_norm 将预测与真值逆变换回 raw counts 语义后计算。
 """
 from __future__ import annotations
@@ -82,20 +83,29 @@ def compute_metrics_vectorized(
     y_pred: np.ndarray,
     y_true_raw: np.ndarray,
     y_pred_raw: np.ndarray,
-    topk_ks: tuple = (10, 50, 100),
+    topk_ks: tuple | None = None,
     auroc_threshold: float = 0.0,
+    details: bool = False,
 ) -> dict:
     """与逐基因/逐细胞循环完全等价的向量化指标计算（大切片评估大幅加速）。
 
     - PCC/SPCC：逐基因（跨细胞）。PCC 用归一化空间；SPCC 是秩相关，对单调变换
       不变，两空间等价。秩用 scipy rankdata(axis=0) 一次算全矩阵。
+    - **cell_PCC（新增）**：逐细胞（跨基因）。每个细胞对全部基因的预测与真实表达
+      计算 Pearson，再对所有细胞取均值。空间选择：**log1p 计数空间**（log1p(raw counts)，
+      即自然"表达谱"空间，避免逐基因 z-score 缩放扭曲谱形）。常量细胞 → nan，nanmean 聚合。
     - Top-k：逐细胞（argpartition 取每行前 k，集合与 argsort[-k:] 相同）。
+      默认 k = 10,20,...,100（课题要求计算 Top-k 随 k 变化的曲线）。
     - AUROC：逐基因，平均秩公式——与 sklearn roc_auc_score 数值一致（已验证
       max|diff|≈1e-16），比逐基因调用快约 6 倍。
 
     语义与 common/eval/metrics.py 的单基因函数完全一致（常量列 → nan，nanmean 聚合）。
+    details=True 时额外返回逐基因数组 gene_pccs/gene_spccs/gene_aurocs（供 CSV 导出）。
     """
     from scipy.stats import rankdata
+
+    if topk_ks is None:
+        topk_ks = tuple(range(10, 101, 10))  # 10,20,...,100
 
     N, G = y_true_norm.shape
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -122,10 +132,18 @@ def compute_metrics_vectorized(
         aurocs = (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
         aurocs = np.where((n_pos == 0) | (n_neg == 0), np.nan, aurocs)
 
+        # cell-level PCC：逐细胞（跨基因），log1p 计数空间
+        xt = np.log1p(np.clip(y_true_raw, 0, None))
+        xp = np.log1p(np.clip(y_pred_raw, 0, None))
+        xc = xt - xt.mean(1, keepdims=True)
+        yc = xp - xp.mean(1, keepdims=True)
+        denom_c = np.sqrt((xc**2).sum(1) * (yc**2).sum(1))
+        cell_pccs = (xc * yc).sum(1) / denom_c
+
         # Top-k 逐细胞（k≥G 时全集重合，acc=1.0，与原 topk_accuracy 语义一致）
         topk = {}
         for k in topk_ks:
-            kk = min(k, G)
+            kk = min(int(k), G)
             if kk >= G:
                 topk[f"top{k}"] = 1.0
                 continue
@@ -137,12 +155,18 @@ def compute_metrics_vectorized(
             ph[np.arange(N)[:, None], pi] = True
             topk[f"top{k}"] = float(((th & ph).sum(1) / kk).mean())
 
-    return {
+    result = {
         "PCC": float(np.nanmean(pccs)),
         "SPCC": float(np.nanmean(spccs)),
+        "cell_PCC": float(np.nanmean(cell_pccs)),
         **topk,
         "AUROC": float(np.nanmean(aurocs)),
     }
+    if details:
+        result["gene_pccs"] = pccs
+        result["gene_spccs"] = spccs
+        result["gene_aurocs"] = aurocs
+    return result
 
 
 def evaluate(
@@ -151,19 +175,79 @@ def evaluate(
     device: str = "cuda",
     gene_norm: str = "log1p_zscore",
     stats: dict | None = None,
-    topk_ks: tuple = (10, 50, 100),
+    topk_ks: tuple | None = None,
     auroc_threshold: float = 0.0,
+    details: bool = False,
 ) -> dict:
     """完整评估，返回全部指标（课题要求 9）。
 
     stats 为表达归一化统计量（测试集使用训练集统计量时，与训练一致）。
+    details=True 时额外返回逐基因数组 gene_pccs/gene_spccs/gene_aurocs（供 CSV 导出）。
     """
     y_true_norm, y_true_raw, y_pred, y_pred_raw = predict(
         model, dataloader, device, gene_norm, stats
     )
     return compute_metrics_vectorized(
-        y_true_norm, y_pred, y_true_raw, y_pred_raw, topk_ks, auroc_threshold
+        y_true_norm, y_pred, y_true_raw, y_pred_raw, topk_ks, auroc_threshold,
+        details=details,
     )
+
+
+def load_gene_names(data_dir: str) -> list[str] | None:
+    """从数据目录读取 gene_names.txt（公共基因列表）。"""
+    p = os.path.join(data_dir, "gene_names.txt")
+    if not os.path.exists(p):
+        return None
+    with open(p) as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def scalar_results(results: dict) -> dict:
+    """从评估结果里提取标量摘要（丢弃逐基因 numpy 数组，供 JSON 序列化）。"""
+    return {k: v for k, v in results.items()
+            if isinstance(v, (int, float, np.floating, np.integer))}
+
+
+def save_eval_results_csv(
+    csv_path: str,
+    results: dict,
+    gene_names: list[str] | None = None,
+    topk_ks: tuple | None = None,
+) -> dict:
+    """把评估结果保存为 CSV（结果需来自 evaluate(details=True)）。
+
+    输出两个文件：
+        {csv_path}              摘要：PCC / SPCC / cell_PCC / AUROC / top10..top100
+        {csv_path}_genes.csv    逐基因：gene, PCC, SPCC, AUROC
+    """
+    import csv
+
+    if topk_ks is None:
+        topk_ks = tuple(range(10, 101, 10))
+    summary_keys = ["PCC", "SPCC", "cell_PCC", "AUROC"]
+    summary_keys += [f"top{k}" for k in topk_ks]
+
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "value"])
+        for k in summary_keys:
+            if k in results:
+                w.writerow([k, float(results[k])])
+
+    gene_path = f"{csv_path}_genes.csv"
+    if gene_names is not None and "gene_pccs" in results:
+        with open(gene_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["gene", "PCC", "SPCC", "AUROC"])
+            for i, g in enumerate(gene_names):
+                w.writerow([
+                    g,
+                    float(results["gene_pccs"][i]),
+                    float(results["gene_spccs"][i]),
+                    float(results["gene_aurocs"][i]),
+                ])
+    return {"summary": csv_path, "genes": gene_path}
 
 
 def fit(

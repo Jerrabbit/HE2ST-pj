@@ -14,9 +14,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 项目根目录
 
+import numpy as np
 import torch
 
-from common.benchmark.harness import evaluate
+from common.benchmark.harness import evaluate, save_eval_results_csv
 from common.data.dataset import FeatureDataset, HESTDataset
 from common.data.expression import load_stats_json
 
@@ -106,11 +107,19 @@ def main() -> None:
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     stats = ref_stats or ds.stats
-    results = evaluate(model, loader, args.device, args.gene_norm, stats)
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    results = evaluate(model, loader, args.device, args.gene_norm, stats,
+                       details=True)
+    # 逐基因 numpy 数组不写入 JSON（单独 CSV 保存）；摘要部分正常序列化
+    json_results = {k: v for k, v in results.items() if not isinstance(v, np.ndarray)}
+    print(json.dumps(json_results, ensure_ascii=False, indent=2))
     os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "test_results.json"), "w") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+        json.dump(json_results, f, ensure_ascii=False, indent=2)
+    csv_files = save_eval_results_csv(
+        os.path.join(args.output_dir, "eval_metrics.csv"),
+        results, gene_names=getattr(ds, "gene_list", None),
+    )
+    print(f"CSV 已保存: {csv_files['summary']} / {csv_files['genes']}")
 
 
 if __name__ == "__main__":

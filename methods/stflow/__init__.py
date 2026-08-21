@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
+from common.benchmark.harness import (
+    _invert_normalization,
+    compute_metrics_vectorized,
+    load_gene_names,
+    scalar_results,
+)
 from common.data.expression import load_expression, normalize_expression
 from common.data.slide_tiling import tile_rois
 from .model import STFlow
@@ -63,8 +68,13 @@ def _tile(coords: np.ndarray, target_cells: int = ROI_TARGET_CELLS,
 # ---------------------------------------------------------------------------
 @torch.no_grad()
 def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
-                   device: str = "cuda", output_dir: str | None = None) -> dict:
-    """整测试切片逐 ROI 采样生成 → 首 ROI 优先对齐回 per-cell → 统一指标。"""
+                   device: str = "cuda", output_dir: str | None = None,
+                   details: bool = False) -> dict:
+    """整测试切片逐 ROI 采样生成 → 首 ROI 优先对齐回 per-cell → 统一指标。
+
+    details=True 时额外返回逐基因数组 gene_pccs/gene_spccs/gene_aurocs 与
+    _gene_names（供 CSV 导出）。
+    """
     model = model.to(device)
     model.eval()
     coords, features, expr_norm = _load_slide(test_dir, gene_norm, stats)
@@ -96,11 +106,14 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
         y_true_raw = _invert_normalization(expr_norm[keep], gene_norm, stats)
         y_pred_raw = _invert_normalization(y_pred[keep], gene_norm, stats)
         results = compute_metrics_vectorized(expr_norm[keep], y_pred[keep],
-                                             y_true_raw, y_pred_raw)
+                                             y_true_raw, y_pred_raw,
+                                             details=details)
+    if details:
+        results["_gene_names"] = load_gene_names(test_dir)
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, "test_results.json"), "w") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+            json.dump(scalar_results(results), f, ensure_ascii=False, indent=2)
     return results
 
 

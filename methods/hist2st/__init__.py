@@ -42,7 +42,12 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from common.benchmark.harness import _invert_normalization, compute_metrics_vectorized
+from common.benchmark.harness import (
+    _invert_normalization,
+    compute_metrics_vectorized,
+    load_gene_names,
+    scalar_results,
+)
 from common.data.expression import load_expression, normalize_expression
 from common.data.slide_tiling import knn_adjacency, tile_rois
 from .model import Hist2STModel, NB_loss, ZINB_loss
@@ -158,7 +163,8 @@ def _predict_roi(model, sub_patches, sub_coords, device) -> np.ndarray:
 
 
 def _compute_metrics(y_true_norm: np.ndarray, y_pred: np.ndarray,
-                     gene_norm: str, stats: dict | None) -> dict:
+                     gene_norm: str, stats: dict | None,
+                     details: bool = False) -> dict:
     """与 common/benchmark/harness.evaluate() 完全一致的指标语义（向量化）。
 
     PCC/SPCC 在归一化空间逐基因；Top-k/AUROC 经 _invert_normalization 逆变换到
@@ -166,12 +172,14 @@ def _compute_metrics(y_true_norm: np.ndarray, y_pred: np.ndarray,
     """
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
-    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw)
+    return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
+                                      details=details)
 
 
 def _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm: str,
                           stats: dict | None, device: str = "cuda",
-                          output_dir: str | None = None) -> dict:
+                          output_dir: str | None = None,
+                          details: bool = False, test_dir: str | None = None) -> dict:
     """对**已加载的切片数组**做整切片 ROI 图推理评估（evaluate_slide 的核心）。
 
     覆盖对齐策略：**首 ROI 优先**（first-ROI-wins）——重叠 ROI 中先预测到该细胞的
@@ -214,23 +222,29 @@ def _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm: str,
                "top100": float("nan"), "AUROC": float("nan")}
         results = nan
     else:
-        results = _compute_metrics(expr_norm[keep], y_pred[keep], gene_norm, stats)
+        results = _compute_metrics(expr_norm[keep], y_pred[keep], gene_norm, stats,
+                                   details=details)
+    if details:
+        results["_gene_names"] = load_gene_names(test_dir)
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, "test_results.json"), "w") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
+            json.dump(scalar_results(results), f, ensure_ascii=False, indent=2)
     return results
 
 
 def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
-                   device: str = "cuda", output_dir: str | None = None) -> dict:
+                   device: str = "cuda", output_dir: str | None = None,
+                   details: bool = False) -> dict:
     """整切片 ROI 图推理评估，返回与 harness evaluate() 相同的指标 dict。
 
     = _load_slide + _predict_slide_arrays（后者可在训练期用缓存数组复用）。
+    details=True 时额外返回逐基因数组与 _gene_names（供 CSV 导出）。
     """
     coords, patches, expr_norm, _expr_raw = _load_slide(test_dir, gene_norm, stats, model.fig_size)
     return _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm,
-                                 stats, device, output_dir)
+                                 stats, device, output_dir, details=details,
+                                 test_dir=test_dir)
 
 
 # --------------------------------------------------------------------------- #

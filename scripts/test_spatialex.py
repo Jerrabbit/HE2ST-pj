@@ -68,11 +68,19 @@ def main() -> None:
     print(f"SpatialEx 模型就绪: num_genes={num_genes} in_dim={in_dim} "
           f"hidden_dim={hidden_dim} num_layers={num_layers}", flush=True)
 
+    from common.benchmark.harness import save_eval_results_csv
+
     stats = _load_stats(args.test_dir, args.gene_norm, args.stats_path, args.output_dir)
     results = evaluate_slide(model, args.test_dir, args.gene_norm, stats,
-                             args.device, args.output_dir)
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+                             args.device, args.output_dir, details=True)
+    print(json.dumps({k: v for k, v in results.items()
+                      if not k.startswith("_") and not isinstance(v, list)},
+                     ensure_ascii=False, indent=2))
+    csv_files = save_eval_results_csv(
+        os.path.join(args.output_dir, "eval_metrics.csv"),
+        results, gene_names=results.get("_gene_names"))
     print(f"结果已保存: {os.path.join(args.output_dir, 'test_results.json')}")
+    print(f"CSV 已保存: {csv_files['summary']} / {csv_files['genes']}")
 
 
 if __name__ == "__main__":
