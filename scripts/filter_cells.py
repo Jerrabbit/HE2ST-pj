@@ -94,6 +94,12 @@ def main() -> None:
     print(f"  umis 分布:   p50={np.median(umis):.0f} p10={np.percentile(umis,10):.0f} "
           f"p5={np.percentile(umis,5):.0f}", flush=True)
     if args.dry_run:
+        # 目标：去掉底部 ~10% 低表达/空白细胞 → 用 p10 阈值估算联合保留比例
+        g10 = float(np.percentile(n_genes, 10))
+        u10 = float(np.percentile(umis, 10))
+        keep10 = int(((n_genes >= g10) & (umis >= u10)).sum())
+        print(f"  [p10 方案] min_genes={g10:.0f} & min_umis={u10:.0f} → "
+              f"保留 {keep10}/{N} ({keep10 / max(N, 1):.1%})", flush=True)
         return
 
     os.makedirs(args.out_dir, exist_ok=True)
