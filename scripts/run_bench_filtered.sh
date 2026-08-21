@@ -15,10 +15,11 @@ BS=${BS:-2048}
 GN=${GN:-log1p_zscore}
 # 过滤参数（2026-08-21 dry-run 定）：去底部 10% 低表达/空白细胞
 #   min_genes = n_genes 的 p10（rep1=36/rep2=37）→ 去 ~10% 低表达细胞
-#   min_umis  = 1（只去掉真正空白/0 UMI 细胞）
+#   min_umis  = 100（已验证 min_umis∈[1,100] 结果完全相同：n_genes≥37 隐含 UMI≥100；
+#               min_umis=150 会额外去 5%，超过 10% 目标）
 #   保留：rep1 89.2%、rep2 90.6%（与"去掉底部 10%"一致）
 MIN_GENES=${MIN_GENES:-37}
-MIN_UMIS=${MIN_UMIS:-1}
+MIN_UMIS=${MIN_UMIS:-100}
 DEV="cuda"
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a logs/bench_filtered_all.log; }
