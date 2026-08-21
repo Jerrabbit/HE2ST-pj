@@ -53,17 +53,34 @@ def main() -> None:
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
+
+    # 并行读 PNG（DataLoader num_workers>0）：顺序 Image.open 在 cpfs HDD 上是 IO 瓶颈
+    # （实测 256 batch 顺序读 ~2s/张，2.5h 才 4096 cell；8 workers 可 ~8× 加速）。
+    from torch.utils.data import DataLoader, Dataset
+
+    class PatchDataset(Dataset):
+        def __init__(self, paths):
+            self.paths = list(paths)
+
+        def __len__(self):
+            return len(self.paths)
+
+        def __getitem__(self, i):
+            return tf(Image.open(self.paths[i]).convert("RGB"))
+
+    dl = DataLoader(PatchDataset(meta["patch_path"].tolist()),
+                    batch_size=args.batch_size, shuffle=False,
+                    num_workers=8, pin_memory=True, drop_last=False)
     feats = np.zeros((n, CLS_DIM), dtype=np.float32)
-    for i in range(0, n, args.batch_size):
-        j0, j1 = i, min(i + args.batch_size, n)
-        batch = [tf(Image.open(meta.iloc[j]["patch_path"]).convert("RGB"))
-                 for j in range(j0, j1)]
-        x = torch.stack(batch).to(args.device)          # (B,3,256,256)
+    done = 0
+    for x in dl:
+        x = x.to(args.device)                           # (B,3,256,256)
         with torch.no_grad():
             fea_all = model.forward_all(x)              # (B, 257, 384)
-            feats[j0:j1] = fea_all[:, 0].cpu().numpy()  # [CLS] token
-        if (j1 % 4096) == 0:
-            print(f"  {j1}/{n}", flush=True)
+        feats[done:done + x.size(0)] = fea_all[:, 0].cpu().numpy()  # [CLS] token
+        done += x.size(0)
+        if done % 4096 == 0:
+            print(f"  {done}/{n}", flush=True)
 
     out = os.path.join(data_dir, "X_hipt_cell.npy")
     np.save(out, feats)
