@@ -14,13 +14,17 @@ FROZEN — do not modify.
 Copied verbatim from Cell_revisions/prediction_pipline/func/utils_color_norm.py;
 only commented-out experimental cvxpy/spams variants and unused viz helpers
 have been removed.
+
+2026-08-21 适配：`import spams` 依赖 spams（pip/conda 在 python3.12 均难装）。
+get_concentrations() 的 spams.lasso(mode=2, pos=True) 是**非负 LASSO**（凸问题），
+改用 numpy 坐标下降等价实现（同一目标函数 min 0.5||OD-C·S||²+λ||C||₁, C≥0，解相同）。
+此为数值求解器替换，不改变 Macenko 算法本身（类似 einops→torch 移植）。
 """
 
 from __future__ import division
 
 import numpy as np
 import cv2 as cv
-import spams
 
 
 def read_image(path):
@@ -73,10 +77,28 @@ def sign(x):
         return 0
 
 
+def _nn_lasso(X, D, lamda=0.01, iters=200):
+    """非负 LASSO 坐标下降（等价 spams.lasso mode=2, pos=True）。
+
+    min_alpha 0.5*||X - D@alpha||_F^2 + lamda*||alpha||_1, alpha >= 0
+    X: (n_feat, n_samp), D: (n_feat, n_atoms) → (n_atoms, n_samp)
+    凸问题，坐标下降收敛到与 spams 相同的唯一解。
+    """
+    n_atoms = D.shape[1]
+    alpha = np.zeros((n_atoms, X.shape[1]))
+    DtD = D.T @ D
+    DtX = D.T @ X
+    for _ in range(iters):
+        for j in range(n_atoms):
+            r = DtX[j] - (DtD[j] @ alpha) + DtD[j, j] * alpha[j]
+            alpha[j] = np.maximum(0.0, (r - lamda) / DtD[j, j])
+    return alpha
+
+
 def get_concentrations(I, stain_matrix, lamda=0.01):
     """Get concentrations, an (npix, 2) matrix."""
     OD = RGB_to_OD(I).reshape((-1, 3))
-    return spams.lasso(OD.T, D=stain_matrix.T, mode=2, lambda1=lamda, pos=True).toarray().T
+    return _nn_lasso(OD.T, stain_matrix.T, lamda).T
 
 
 def get_stain_matrix(I, beta=0.15, alpha=1):
