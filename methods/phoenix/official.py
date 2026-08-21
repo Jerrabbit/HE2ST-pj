@@ -41,14 +41,21 @@ def load_flow_weights(flow: nn.Module, path: str, device: str = "cpu") -> nn.Mod
     return flow
 
 
-def build_dino(dino_weights_path: str, device: str = "cpu") -> nn.Module:
-    """构建 DINOv2 ViT-Giant（冻结）并加载 pytorch_model.bin。"""
+def build_dino(flow_weights_path: str, device: str = "cpu") -> nn.Module:
+    """构建 DINOv2 ViT-Giant（冻结），从 flow_model.pth 的 vision_model.* 键加载。
+
+    注意：`pytorch_model.bin` 是 518 分辨率原版（pos_embed 1369），不能直接用于 224；
+    flow_model.pth 里的 vision_model 是 **224 分辨率**（pos_embed 256，2026-08-22 核实），
+    与官方训练一致，故从 flow_model.pth 提取。
+    """
     import timm
 
+    sd = torch.load(flow_weights_path, map_location="cpu", weights_only=False)
+    dino_sd = {k[len("vision_model."):]: v for k, v in sd.items()
+               if k.startswith("vision_model.")}
     m = timm.create_model(DINO_MODEL_NAME, pretrained=False, img_size=224, num_classes=0,
                           global_pool="token", init_values=1e-5, dynamic_img_size=False)
-    sd = torch.load(dino_weights_path, map_location="cpu", weights_only=False)
-    missing, unexpected = m.load_state_dict(sd, strict=False)
+    missing, unexpected = m.load_state_dict(dino_sd, strict=False)
     if missing or unexpected:
         print(f"[Phoenix] DINOv2 加载: missing={len(missing)} unexpected={len(unexpected)}",
               flush=True)
@@ -66,12 +73,14 @@ class PhoenixOfficial(nn.Module):
 
     input_type = "patch"
 
-    def __init__(self, num_genes: int, flow_weights: str, dino_weights: str,
+    def __init__(self, num_genes: int, flow_weights: str,
+                 dino_weights: str | None = None,
                  device: str = "cuda", n_sample_steps: int = 50, finetune: bool = False):
         super().__init__()
         self.num_genes = int(num_genes)
         self.n_sample_steps = n_sample_steps
-        self.dino = build_dino(dino_weights, device)
+        # DINOv2 从 flow_model.pth 的 vision_model.* 加载（224 分辨率，与训练一致）
+        self.dino = build_dino(flow_weights, device)
         self.flow = build_flow()
         load_flow_weights(self.flow, flow_weights, device)
         self.flow.to(device)
