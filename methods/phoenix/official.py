@@ -121,6 +121,51 @@ class PhoenixOfficial(nn.Module):
         return loss, {"fm_loss": float(loss.item())}
 
 
+class PhoenixFlowOnly(nn.Module):
+    """flow 微调（DINOv2 token 已缓存，不经过 DINOv2）。input_type='feature'。
+
+    输入 x: (B, 261, 1536) DINOv2 patch token（由 extract_phoenix_dino.py 预提取）。
+    """
+
+    input_type = "feature"
+    feature_file = "X_phoenix_dino.npy"
+
+    def __init__(self, num_genes: int, flow_weights: str,
+                 device: str = "cuda", n_sample_steps: int = 50):
+        super().__init__()
+        self.num_genes = int(num_genes)
+        self.n_sample_steps = n_sample_steps
+        self.flow = build_flow()
+        load_flow_weights(self.flow, flow_weights, device)
+        self.flow.to(device)
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, 261, 1536) → (B, num_genes) log1p_zscore 预测（Euler 采样）。"""
+        B = x.size(0)
+        c = x
+        z = torch.randn(B, self.num_genes, 1, device=x.device)
+        ts = torch.linspace(0.0, 1.0, self.n_sample_steps + 1, device=x.device)
+        for i in range(self.n_sample_steps):
+            t = ts[i].expand(B)
+            v = self.flow(z, t, c)
+            z = z + (ts[i + 1] - ts[i]) * v
+        return z.squeeze(-1)
+
+    def training_loss(self, gene_expr: torch.Tensor, x: torch.Tensor,
+                      lambd: float | None = None) -> tuple[torch.Tensor, dict]:
+        """流匹配损失（目标 log1p_zscore 表达，条件为缓存 DINOv2 token）。"""
+        B, G = gene_expr.shape
+        z = gene_expr.unsqueeze(-1)
+        c = x
+        t = torch.rand(B, device=gene_expr.device)
+        eps = torch.randn_like(z)
+        z_t = (1 - t[:, None, None]) * eps + t[:, None, None] * z
+        v_pred = self.flow(z_t, t, c)
+        loss = nn.functional.mse_loss(v_pred, z - eps)
+        return loss, {"fm_loss": float(loss.item())}
+
+
 def denorm_to_log1p(x: np.ndarray, stats: dict) -> np.ndarray:
     """flow 输出（normalized）→ log1p counts（官方语义 clip*std+mean）。"""
     mean, std = stats["mean"], stats["std"]

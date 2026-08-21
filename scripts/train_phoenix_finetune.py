@@ -50,37 +50,29 @@ def _load_patches_meta(data_dir: str, max_cells: int | None):
 def main() -> None:
     import numpy as np
     import torch
-    from PIL import Image
     from torch.utils.data import DataLoader, Dataset, Subset
-    from torchvision import transforms
 
     from common.benchmark.harness import evaluate
     from common.data.expression import normalize_expression, save_stats_json
-    from methods.phoenix.official import IMG_MEAN, IMG_STD, PhoenixOfficial
+    from methods.phoenix.official import PhoenixFlowOnly
 
     args = parse_args()
     device = args.device
 
-    tf = transforms.Compose([
-        transforms.Resize((224, 224), transforms.InterpolationMode.BICUBIC),
-        transforms.ToTensor(),
-        transforms.Normalize(tuple(IMG_MEAN[0, :, 0, 0].tolist()),
-                             tuple(IMG_STD[0, :, 0, 0].tolist())),
-    ])
+    class TokenExprDS(Dataset):
+        """(DINOv2 缓存 token (261,1536) fp16 → fp32, gene_expr 归一化)。"""
 
-    class PatchExprDS(Dataset):
-        """(patch tissue 归一化 224, gene_expr 归一化)。"""
-
-        def __init__(self, meta, expr_norm):
-            self.paths = meta["patch_path"].tolist()
+        def __init__(self, tokens_path, expr_norm):
+            self.tokens = np.load(tokens_path, mmap_mode="r")   # (N, 261, 1536) fp16
             self.expr = expr_norm
+            assert len(self.tokens) == len(expr_norm)
 
         def __len__(self):
-            return len(self.paths)
+            return len(self.expr)
 
         def __getitem__(self, i):
-            img = tf(Image.open(self.paths[i]).convert("RGB"))
-            return {"patch": img, "gene_expr": torch.from_numpy(self.expr[i].copy())}
+            return {"feature": torch.from_numpy(self.tokens[i].astype(np.float32).copy()),
+                    "gene_expr": torch.from_numpy(self.expr[i].copy())}
 
     # 表达归一化（log1p_zscore，训练集统计量）
     expr_tr = np.load(os.path.join(args.train_dir, "gene_expression.npy"))
@@ -92,10 +84,16 @@ def main() -> None:
           flush=True)
     save_stats_json(stats, os.path.join(args.output_dir, "train_stats.json"))
 
-    meta_tr = _load_patches_meta(args.train_dir, args.train_max_cells)
-    meta_va = _load_patches_meta(args.valid_dir, None)
-    tr_ds = PatchExprDS(meta_tr, expr_tr_norm[: len(meta_tr)])
-    va_ds = PatchExprDS(meta_va, expr_va_norm[: len(meta_va)])
+    tr_tokens = os.path.join(args.train_dir, "X_phoenix_dino.npy")
+    va_tokens = os.path.join(args.valid_dir, "X_phoenix_dino.npy")
+    if not os.path.exists(tr_tokens) or not os.path.exists(va_tokens):
+        raise SystemExit(
+            f"缺少 DINOv2 缓存 token：{tr_tokens} / {va_tokens}\n"
+            f"请先运行：python scripts/extract_phoenix_dino.py --rep 1/2")
+
+    tr_ds = TokenExprDS(tr_tokens, expr_tr_norm[: args.train_max_cells
+                       if args.train_max_cells else expr_tr.shape[0]])
+    va_ds = TokenExprDS(va_tokens, expr_va_norm)
     if len(va_ds) > args.eval_subset:
         idx = np.random.default_rng(0).choice(len(va_ds), args.eval_subset, replace=False)
         va_ds = Subset(va_ds, idx)
@@ -105,10 +103,9 @@ def main() -> None:
     va_dl = DataLoader(va_ds, batch_size=args.batch_size, shuffle=False,
                        num_workers=4, pin_memory=True)
 
-    model = PhoenixOfficial(num_genes=num_genes, flow_weights=args.flow_weights,
-                            dino_weights=args.dino_weights, device=device,
-                            n_sample_steps=args.test_steps, finetune=True)
-    print(f"[Phoenix-finetune] 官方权重已加载，DINOv2 冻结，flow 可训练", flush=True)
+    model = PhoenixFlowOnly(num_genes=num_genes, flow_weights=args.flow_weights,
+                            device=device, n_sample_steps=args.test_steps)
+    print(f"[Phoenix-finetune] 官方 flow 权重已加载（DINOv2 token 缓存），flow 可训练", flush=True)
 
     optimizer = torch.optim.AdamW(model.flow.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
@@ -120,7 +117,7 @@ def main() -> None:
         model.flow.train()
         total, n = 0.0, 0
         for batch in tr_dl:
-            x = batch["patch"].to(device)
+            x = batch["feature"].to(device)
             y = batch["gene_expr"].to(device)
             optimizer.zero_grad()
             loss, _ = model.training_loss(y, x)
