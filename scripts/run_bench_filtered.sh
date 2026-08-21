@@ -13,12 +13,11 @@ PATIENCE=${PATIENCE:-10}
 LR=${LR:-1e-3}
 BS=${BS:-2048}
 GN=${GN:-log1p_zscore}
-# 过滤参数（2026-08-21 dry-run 定）：去底部 10% 低表达/空白细胞
-#   min_genes = n_genes 的 p10（rep1=36/rep2=37）→ 去 ~10% 低表达细胞
-#   min_umis  = 100（已验证 min_umis∈[1,100] 结果完全相同：n_genes≥37 隐含 UMI≥100；
-#               min_umis=150 会额外去 5%，超过 10% 目标）
-#   保留：rep1 89.2%、rep2 90.6%（与"去掉底部 10%"一致）
-MIN_GENES=${MIN_GENES:-37}
+# 过滤参数（2026-08-21 dry-run 定，用户要求取整）：去底部 ~10% 低表达/空白细胞
+#   min_genes = 40（取整；实测 min_genes=40 去 ~13%：rep1 86.5%/rep2 87.7%，
+#                 min_genes=50 去 28% 过度，min_genes=37 去 ~10%）
+#   min_umis  = 100（min_umis∈[1,100] 结果相同：n_genes≥40 隐含 UMI≥100）
+MIN_GENES=${MIN_GENES:-40}
 MIN_UMIS=${MIN_UMIS:-100}
 DEV="cuda"
 
