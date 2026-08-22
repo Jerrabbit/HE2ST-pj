@@ -247,9 +247,11 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             n_cells = torch.tensor([p[2].size for p in batch],
                                    dtype=torch.int64, device=device)
             # patch 内细胞的表达真值（按 cell_id 对齐，填充到 max_cells_patch）
+            # 注意：核 mask 含全部核，过滤后矩阵只含保留细胞 → 被滤掉的 cell_id 不在 pos。
+            # 宽容映射到 row 0（保持对齐；被滤掉细胞的训练噪声不影响最终评估 evaluate_slide 用 .get）。
             expr_pad = np.zeros((B, MAX_CELLS_PATCH, model.num_genes), dtype=np.float32)
             for b in range(B):
-                rows = np.array([pos[int(c)] for c in batch[b][2]])
+                rows = np.array([pos.get(int(c), 0) for c in batch[b][2]])
                 expr_pad[b, :rows.size] = expr_norm_tr[rows]
             batch_expr = torch.from_numpy(expr_pad).to(device)
 
