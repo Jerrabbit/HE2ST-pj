@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--test_steps", type=int, default=50, help="最终测试采样步数")
     p.add_argument("--output_dir", default="outputs/bench_phoenix_finetune")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--tokens_dir", default=None,
+                   help="DINOv2 token 缓存目录（cpfs mmap 随机读会 D-state 卡死；"
+                        "复制到 /tmp 本地盘后传此参数，如 /tmp/dino_tokens）")
     return p.parse_args()
 
 
@@ -85,8 +88,13 @@ def main() -> None:
           flush=True)
     save_stats_json(stats, os.path.join(args.output_dir, "train_stats.json"))
 
-    tr_tokens = os.path.join(args.train_dir, "X_phoenix_dino.npy")
-    va_tokens = os.path.join(args.valid_dir, "X_phoenix_dino.npy")
+    def _tok_path(dirname: str) -> str:
+        if args.tokens_dir:
+            return os.path.join(args.tokens_dir, os.path.basename(dirname), "X_phoenix_dino.npy")
+        return os.path.join(dirname, "X_phoenix_dino.npy")
+
+    tr_tokens = _tok_path(args.train_dir)
+    va_tokens = _tok_path(args.valid_dir)
     if not os.path.exists(tr_tokens) or not os.path.exists(va_tokens):
         raise SystemExit(
             f"缺少 DINOv2 缓存 token：{tr_tokens} / {va_tokens}\n"

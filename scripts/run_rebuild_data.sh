@@ -42,11 +42,14 @@ done
 
 # ---------- 4. CTransPath ctx512（Path2Space，权重在 cpfs） ----------
 # extract_ctranspath_context.py 无 --data_dir：data_dir 由 --rep 推导（~/HE2ST-pj/data/rep{N}）
+# 机器 128 核，--workers 16（默认 4 是 CPU 瓶颈：crop+Macenko 并行，GPU forward 串行）
+CTRANSPATH_WORKERS=${CTRANSPATH_WORKERS:-16}
 for rep in 1 2; do
   OUT=data/rep$rep/X_ctranspath_ctx512.npy
   if [ ! -f "$OUT" ]; then
-    say "[ctranspath] rep$rep ..."
+    say "[ctranspath] rep$rep (workers=$CTRANSPATH_WORKERS) ..."
     python scripts/extract_ctranspath_context.py --rep "$rep" \
+      --workers "$CTRANSPATH_WORKERS" \
       --output "$OUT" --device cuda >> "$LOG" 2>&1 || { say "!! rep$rep ctranspath 失败"; exit 1; }
   else
     say "[ctranspath] rep$rep 已存在，跳过"
