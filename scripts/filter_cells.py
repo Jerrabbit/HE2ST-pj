@@ -73,6 +73,9 @@ def main() -> None:
                    help="复制保留细胞的 patch（默认开）")
     p.add_argument("--subset_features", action="store_true", default=True,
                    help="按行切片 X_*.npy 特征文件（默认开）")
+    p.add_argument("--exclude_features", default=None,
+                   help="逗号分隔：跳过这些特征文件的切片（如大文件 X_phoenix_dino.npy，"
+                        "11 方法不需要，避免数小时无谓 IO）")
     p.add_argument("--ghist_src", default=None,
                    help="GHIST 数据目录（可选，过滤其 CSV 表达/核/avgexp）")
     p.add_argument("--ghist_out", default=None,
@@ -143,10 +146,16 @@ def main() -> None:
         keep_meta["patch_path"] = new_paths
     keep_meta.to_csv(os.path.join(args.out_dir, "metadata.csv"), index=False)
 
-    # 特征文件按行切片（首维 == N 才切）
+    # 特征文件按行切片（首维 == N 才切；--exclude_features 跳过）
+    exclude = set()
+    if args.exclude_features:
+        exclude = set(f.strip() for f in args.exclude_features.split(",") if f.strip())
     if args.subset_features:
         for fp in sorted(glob.glob(os.path.join(args.src_dir, "X_*.npy"))):
             name = os.path.basename(fp)
+            if name in exclude:
+                print(f"  跳过 {name}（--exclude_features）", flush=True)
+                continue
             try:
                 arr = np.load(fp, mmap_mode="r")
             except Exception as e:

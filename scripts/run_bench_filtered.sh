@@ -26,11 +26,13 @@ say() { echo "[$(date '+%F %T')] $*" | tee -a logs/bench_filtered_all.log; }
 say "==== 过滤后 benchmark 开始: EPOCHS=$EPOCHS GN=$GN min_genes=$MIN_GENES min_umis=$MIN_UMIS ===="
 
 # ---------- 0. 细胞过滤（幂等） ----------
+# 排除 X_phoenix_dino.npy（131GB，仅 Phoenix 微调用原始 tokens，11 方法不需要，避免数小时 IO）
 for rep in rep1 rep2; do
   if [ ! -d "data/${rep}_f" ]; then
     say "[filter] $rep → ${rep}_f ..."
     python scripts/filter_cells.py --src_dir "data/$rep" --out_dir "data/${rep}_f" \
       --min_genes "$MIN_GENES" --min_umis "$MIN_UMIS" \
+      --exclude_features X_phoenix_dino.npy \
       --ghist_src "data/ghist_$rep" --ghist_out "data/ghist_${rep}_f" \
       >> "logs/filter_${rep}.log" 2>&1 || { say "!! filter $rep 失败"; exit 1; }
   fi
