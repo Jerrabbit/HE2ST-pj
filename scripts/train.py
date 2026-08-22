@@ -160,9 +160,9 @@ def main() -> None:
 
     from torch.utils.data import DataLoader
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=4, pin_memory=True)
+                              num_workers=2, pin_memory=True)
     valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, shuffle=False,
-                              num_workers=4, pin_memory=True)
+                              num_workers=2, pin_memory=True)
 
     if hasattr(mod, "train_function"):
         # 方法自带训练流程（如 BLEEP 对比学习、Hist2ST 负二项），复用同一数据加载与评估
