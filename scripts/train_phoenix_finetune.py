@@ -80,6 +80,7 @@ def main() -> None:
     expr_tr_norm, stats = normalize_expression(expr_tr, "log1p_zscore")
     expr_va_norm, _ = normalize_expression(expr_va, "log1p_zscore", stats)
     num_genes = expr_tr.shape[1]
+    os.makedirs(args.output_dir, exist_ok=True)
     print(f"[Phoenix-finetune] genes={num_genes} 训练集 {expr_tr.shape[0]} 验证集 {expr_va.shape[0]}",
           flush=True)
     save_stats_json(stats, os.path.join(args.output_dir, "train_stats.json"))
