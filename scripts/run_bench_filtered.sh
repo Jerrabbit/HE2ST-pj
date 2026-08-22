@@ -52,17 +52,18 @@ python scripts/test.py --method $m --ckpt $D/best.pt --test_dir data/rep2_f \
   --gene_norm $GN --output_dir $D --device $DEV >> logs/bench_${m}_train.log 2>&1
 
 # ---------- 2. SQUALL 官方解码器头 ----------
+# TransformerDecoder 注意力 (B,196,196) 显存重：batch 需小（2048 会 OOM，用 256）
 m=squall; D=outputs/bench_${m}_decoder_f
 if [ ! -f "$D/best.pt" ]; then
   say "== $m decoder train =="
   python scripts/train.py --method $m --variant decoder --feature_file X_squall_tokens.npy \
     --train_dir data/rep1_f --valid_dir data/rep2_f \
-    --epochs $EPOCHS --patience $PATIENCE --batch_size $BS --lr $LR --gene_norm $GN \
+    --epochs $EPOCHS --patience $PATIENCE --batch_size 256 --lr $LR --gene_norm $GN \
     --output_dir $D --device $DEV > logs/bench_${m}_decoder_train.log 2>&1
 fi
 say "== $m decoder test =="
 python scripts/test.py --method $m --variant decoder --feature_file X_squall_tokens.npy \
-  --ckpt $D/best.pt --test_dir data/rep2_f --gene_norm $GN \
+  --ckpt $D/best.pt --test_dir data/rep2_f --gene_norm $GN --batch_size 256 \
   --output_dir $D --device $DEV >> logs/bench_${m}_decoder_train.log 2>&1
 
 # ---------- 3. GHIST（从头，ghist_data 格式） ----------
