@@ -240,6 +240,46 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 | BLEEP（微调 resnet50） | 0.3235 | 0.283 | 0.560 | 0.732 | 0.26 vs 0.32 之谜已解决：旧 0.2594 是 test.py 缺 `--img_size 224` 的 bug；`--img_size 224` 全量测试确认 **0.3235**（冻结后 0.2131） |
 | UNI2+MLP improved（仅改 MLP） | 0.3248 | 0.284 | 0.576 | 0.736 | ≈ 基线 0.3245 → MLP 结构改进无收益，提升来自表示而非结构 |
 
+## 细胞过滤后重跑（2026-08-22，进行中）
+
+### 细胞过滤设置
+
+对 rep1/rep2 做 QC 过滤，去除底部 ~13% 低表达/空白细胞（用户要求"去掉底部 10%"，
+dry-run 看分布后取整）：
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `min_genes` | **40** | n_genes 的 p10 取整（rep1 p10=36、rep2 p10=37）；实测 40 去 ~13%，50 去 28% 过度 |
+| `min_umis` | **100** | 已验证 min_umis∈[1,100] 结果完全相同（n_genes≥40 隐含 UMI≥100）；150 会额外去 5% |
+
+**过滤效果**（dry-run 实测）：
+
+| 切片 | 原始 | 过滤后 | 保留率 |
+|---|---|---|---|
+| rep1 | 164,000 | **141,804** | 86.5% |
+| rep2 | 111,345 | **97,646** | 87.7% |
+
+特征按保留行切片复用（`scripts/filter_cells.py`，mmap 分块直接写避开 cpfs 慢路径），
+GHIST 数据按 cell_id 过滤。过滤后数据目录 `data/rep1_f`、`data/rep2_f`。
+
+### 过滤后基准结果（rep1_f → rep2_f，统一协议，含新评估指标）
+
+> 评估扩展：新增 **cell_PCC**（逐细胞跨基因，log1p 空间平均）与 **Top-k 全值（k=10..100）**。
+> 原始列 = README 上一节的过滤前结果。**已完成 5 方法全部提升**（+0.010 ~ +0.017），
+> 验证"过滤后指标整体提升"预期。
+
+| 方法 | 原始 PCC | **过滤后 PCC** | Δ | cell_PCC | SPCC | Top-10 | Top-50 | Top-100 | AUROC |
+|---|---|---|---|---|---|---|---|---|---|
+| **UNI2+MLP** | 0.3245 | **0.3364** | +0.012 | 0.696 | 0.295 | 0.532 | 0.592 | 0.643 | 0.726 |
+| **Pixel2Gene cell** | 0.2913 | **0.3074** | +0.016 | 0.681 | 0.280 | 0.516 | 0.577 | 0.571 | 0.725 |
+| **SpatialEx** | 0.2964 | **0.3065** | +0.010 | 0.675 | 0.275 | 0.513 | 0.578 | 0.641 | 0.710 |
+| **Path2Space** | 0.2780 | **0.2946** | +0.017 | 0.671 | 0.268 | 0.503 | 0.576 | 0.648 | 0.704 |
+| **DeepPT (R50)** | 0.2628 | **0.2791** | +0.016 | 0.663 | 0.260 | 0.494 | 0.571 | 0.644 | 0.697 |
+
+**待完成**：STFlow（训练中，val_PCC ~0.09 逼近原始 0.0933）、ST-Net / BLEEP / GHIST /
+SQUALL（cpfs IO 卡死修复后重跑中）、Local+Global（过滤后调参 + 消融）。完整 Top-k
+曲线与过滤前后对比表将由 `collect_results.py` 汇总输出。
+
 ## 关键结论信号
 
 1. **Local-Global 双尺度 0.3245 → 0.3712（+0.047），全部来自表示**：模型仍是同一 MLP，
@@ -320,10 +360,12 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 
 ### 评估（共用 `common/benchmark/harness.py` + `common/eval/metrics.py`）
 
-1. **统一指标**（`metrics.py`）：PCC/SPCC（归一化空间逐基因）、Top-k（逐细胞 raw counts
-   语义）、AUROC（逐基因 raw counts>0）。全部经 `compute_metrics_vectorized`（`harness.py`）。
+1. **统一指标**（`metrics.py`）：PCC/SPCC（归一化空间逐基因）、**cell_PCC（逐细胞跨基因，
+   log1p 计数空间）**、Top-k（逐细胞 raw counts 语义，**默认 k=10,20,...,100 全值**）、
+   AUROC（逐基因 raw counts>0）。全部经 `compute_metrics_vectorized`（`harness.py`），
+   `details=True` 时额外返回逐基因 PCC/SPCC/AUROC 数组（CSV 导出）。
 2. **统一协议**：50 epoch + val_PCC patience=10 早停 + lr=1e-3 + AdamW + log1p_zscore；
-   `fit()` 统一训练，`evaluate()` 统一评估。
+   `fit()` 统一训练，`evaluate()` 统一评估；结果存 `eval_metrics.csv`（摘要 + 逐基因）。
 3. **各方法评估路径**（最终指标都走同一个 `compute_metrics_vectorized`）：
    - **标准 harness**（BLEEP/DeepPT/Phoenix/SQUALL/ST-Net/uni2_mlp/Pixel2Gene/Path2Space
      训练版）：`evaluate(model, loader, ...)`。
@@ -376,11 +418,12 @@ top100 0.611 / AUROC 0.670**。证明统一协议 null 的根因是**协议**（
 特征下无法收敛），而非架构本身——但即便如此，从头学方法（0.21）仍远低于简单
 Foundation 特征方法（UNI2+MLP 0.32），再次支持"表示 > 架构/训练技巧"。
 
-## 同步状态（2026-08-20）
+## 同步状态（2026-08-22）
 
-- **GitHub main = `da98f6c`**：包含全部方法代码 + Local+Global 框架（含 lg_ln 变体）、
-  README 完整文档（方法架构/协议/指标 + Local-Global 实验）、两条 sweep 曲线图、
-  重绘 benchmark 柱状图、`test_stflow.py` 的 prior/n_sample_steps 修复。
-- **远程代码 = 本地**：含全部方法、Local+Global 框架（lg_ln 变体）、并行提取脚本、
-  修复后的 `test_stflow.py`。
+- **GitHub main**：全部方法代码 + Local+Global 框架 + 评估模块扩展（cell_PCC、Top-k 全 k、
+  CSV 导出）+ 细胞过滤（`filter_cells.py`）+ 过滤后重跑编排（`run_bench_filtered.sh`、
+  `run_lg_filtered.sh`）+ Phoenix 官方权重支持（零样本/微调）。最新提交 `1c039b0` 起。
+- **远程代码 = 本地**（cpfs `.../HE2ST-pj`，`~/HE2ST-pj` 为符号链接）。
+- **远程环境要点**：系统 python3.12 + torch2.5.1；pytorch.org/pypi 可达、github/HF 不可达；
+  cpfs 小文件并行读会 D-state 卡死（patch/大特征文件需放 `/tmp` nvme）。
 - 运行结果文件（`outputs/bench_*/`、`outputs/sweep_*/`）不入库（gitignore），保存在远程。
