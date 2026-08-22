@@ -32,7 +32,7 @@ for rep in rep1 rep2; do
     say "[filter] $rep → ${rep}_f ..."
     python scripts/filter_cells.py --src_dir "data/$rep" --out_dir "data/${rep}_f" \
       --min_genes "$MIN_GENES" --min_umis "$MIN_UMIS" \
-      --exclude_features X_phoenix_dino.npy \
+      --exclude_features X_phoenix_dino.npy --no_copy_patches \
       --ghist_src "data/ghist_$rep" --ghist_out "data/ghist_${rep}_f" \
       >> "logs/filter_${rep}.log" 2>&1 || { say "!! filter $rep 失败"; exit 1; }
   fi

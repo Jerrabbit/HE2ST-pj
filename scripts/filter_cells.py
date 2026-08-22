@@ -71,6 +71,9 @@ def main() -> None:
     p.add_argument("--dry_run", action="store_true", help="只打印统计，不写文件")
     p.add_argument("--copy_patches", action="store_true", default=True,
                    help="复制保留细胞的 patch（默认开）")
+    p.add_argument("--no_copy_patches", action="store_true",
+                   help="不复制 patch（metadata 保留原路径引用；原 rep1/rep2 patches 持久，"
+                        "patch 类方法可直读，省数十分钟 HDD 小文件拷贝）")
     p.add_argument("--subset_features", action="store_true", default=True,
                    help="按行切片 X_*.npy 特征文件（默认开）")
     p.add_argument("--exclude_features", default=None,
@@ -119,7 +122,7 @@ def main() -> None:
 
     # metadata + patches
     keep_meta = meta.iloc[idx].copy()
-    if args.copy_patches:
+    if args.copy_patches and not args.no_copy_patches:
         out_patches = os.path.join(args.out_dir, "patches")
         os.makedirs(out_patches, exist_ok=True)
         new_paths = []
