@@ -211,7 +211,7 @@ def _filter_ghist(src: str, out: str, retained_cell_ids) -> None:
     avgexp = expr.iloc[:n_ref].mean(axis=0).to_frame().T
     avgexp.to_csv(os.path.join(out, "avgexp.csv"), index=False)
 
-    for name in ("he_image.tif", "he_image_nuclei_seg.tif"):
+    for name in ("he_image.tif", "he_image_nuclei_seg.tif", "genes.txt"):
         s = os.path.join(src, name)
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(out, name))
