@@ -124,7 +124,10 @@ def main() -> None:
         for _, row in keep_meta.iterrows():
             src_p = row["patch_path"]
             if not os.path.isabs(src_p):
-                src_p = os.path.join(args.src_dir, src_p)
+                # patch_path 可能相对项目根（preprocess_he 的 output_dir 是相对路径
+                # 如 'data/rep1/patches/cell_X.png'），也可能相对 src_dir → 两个候选都试
+                cand = os.path.join(args.src_dir, src_p)
+                src_p = src_p if os.path.exists(src_p) else cand
             name = os.path.basename(src_p)
             dst = os.path.join(out_patches, name)
             if os.path.exists(src_p):
