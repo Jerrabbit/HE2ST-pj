@@ -46,18 +46,26 @@ def qc_mask(expr: np.ndarray, min_genes: int, min_umis: int) -> np.ndarray:
 
 
 def _subset_feature(src_path: str, out_path: str, idx: np.ndarray):
-    """把特征文件按 idx 切行写新文件（支持 2D/3D，mmap 分块避免整载大文件）。"""
+    """把特征文件按 idx 切行写新文件（支持 2D/3D）。
+
+    注意：用**直接文件写**而非 open_memmap。cpfs 上 mmap 写比直接写慢 ~9×
+    （实测 0.1 vs 0.9 GB/s，mmap flush 会 D-state 卡死大文件）。113GB 直接写 ~2 分钟。
+    """
+    import numpy.lib.format as fmt
+
     arr = np.load(src_path, mmap_mode="r")
     if arr.ndim not in (2, 3):
         print(f"  跳过 {os.path.basename(src_path)}：ndim={arr.ndim}", flush=True)
         return
-    out = np.lib.format.open_memmap(out_path, mode="w+", dtype=arr.dtype,
-                                    shape=(len(idx),) + arr.shape[1:])
-    CHUNK = 200_000
-    for s in range(0, len(idx), CHUNK):
-        b = idx[s:s + CHUNK]
-        out[s:s + len(b)] = arr[b]
-    out.flush()
+    shape = (len(idx),) + arr.shape[1:]
+    with open(out_path, "wb") as f:
+        header = {"descr": fmt.dtype_to_descr(arr.dtype),
+                  "fortran_order": False, "shape": shape}
+        fmt.write_array_header_2_0(f, header)
+        CHUNK = 20_000
+        for s in range(0, len(idx), CHUNK):
+            b = idx[s:s + CHUNK]
+            f.write(np.ascontiguousarray(arr[b]).tobytes())
     print(f"  {os.path.basename(src_path)}: ({arr.shape[0]},{arr.shape[1:]}) "
           f"→ ({len(idx)},{arr.shape[1:]})", flush=True)
 
