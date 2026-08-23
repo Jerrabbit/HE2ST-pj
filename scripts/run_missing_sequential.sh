@@ -7,15 +7,18 @@ DEV="cuda"
 LOG=logs/missing_seq.log
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
-# 1. SQUALL 解码器（cpfs tokens；之前孤儿已能训到 ep4）
+# 1. SQUALL 解码器
+# 重要：--feature_file 必须用裸文件名（X_squall_tokens.npy）——train.py 对 train/valid 共用
+# 同一个 feature_files；裸名 FeatureDataset 会按各自 data_dir join（train→rep1_f、valid→rep2_f）。
+# 若给显式路径 data/rep1_f/...，valid 也会加载 rep1_f 的 tokens → 验证数据错位 → val_PCC≈0。
 say "== squall =="
 python scripts/train.py --method squall --variant decoder \
-  --feature_file data/rep1_f/X_squall_tokens.npy \
+  --feature_file X_squall_tokens.npy \
   --train_dir data/rep1_f --valid_dir data/rep2_f --epochs 50 --patience 10 \
   --batch_size 256 --lr 1e-3 --gene_norm log1p_zscore \
   --output_dir outputs/bench_squall_decoder_f --device $DEV >> "$LOG" 2>&1
 python scripts/test.py --method squall --variant decoder \
-  --feature_file data/rep2_f/X_squall_tokens.npy \
+  --feature_file X_squall_tokens.npy \
   --ckpt outputs/bench_squall_decoder_f/best.pt --test_dir data/rep2_f \
   --gene_norm log1p_zscore --batch_size 256 --output_dir outputs/bench_squall_decoder_f --device $DEV >> "$LOG" 2>&1
 
