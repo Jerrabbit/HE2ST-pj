@@ -168,11 +168,16 @@ class BLEEP(nn.Module):
         """
         if self.reference is None:
             raise RuntimeError("未构建参考集：请先 build_reference()")
+        # 参考集缓存到设备（只移动一次，避免每 batch 把 164k×256 从 CPU 搬到 GPU）
+        if getattr(self, "_ref_dev", None) != x.device:
+            self._ref = {k: v.to(x.device) for k, v in self.reference.items()}
+            self._ref_dev = x.device
+        ref = self._ref
         q = F.normalize(self.image_embed(x), dim=-1)                   # (B,256)
-        sim = q @ self.reference["spot_emb"].to(x.device).T            # (B,N)
+        sim = q @ ref["spot_emb"].T                                    # (B,N)
         top_k = min(self.top_k, sim.size(1))
         vals, idx = sim.topk(top_k, dim=-1)                            # (B,k)
-        ref_expr = self.reference["spot_expr"].to(x.device)
+        ref_expr = ref["spot_expr"]
         if self.ref_topk_weighted:
             # 官方 weighted_average：d² = ||s-q||² = 2-2·sim（均已归一化）
             dist_sq = 2.0 - 2.0 * vals
