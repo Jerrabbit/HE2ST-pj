@@ -350,6 +350,104 @@ AUROC 普遍微降是"过滤去除 easy negatives 使二分类判别变难"的�
    **0.3281**（token 级信息被更强头利用）。早期特征提取误用 0-255 输入（官方教程为 0-1），
    已用 0-1 复核。
 
+### 各方法实现总结（原始粒度 → cell-level 适配 → 实现方式）
+
+> 核心问题：HE→ST 各方法原始面向的粒度不同（**slide/spot/cell**）。本 benchmark 统一在
+> **per-cell**（Xenium）粒度评估。下表总结每种方法的原始粒度、到 cell-level 的适配方式，
+> 以及实现方式（从头训练 / 冻结编码器 + 训练头 / 官方权重）。
+
+| 方法 | 原始粒度 | cell-level 适配 | 实现方式 | 编码器来源 |
+|---|---|---|---|---|
+| **UNI2+MLP**（基线） | 基础模型（patch 级） | 每细胞 256×256 patch → UNI2 特征 | **冻结 UNI2** + 训练 MLP 头 | UNI2（ViT-L/14，HF） |
+| **UNI2+MLP Local+Global** | 同上 | 同上 + 中心 token 局部特征 | 冻结 UNI2 + 训练 MLP（单次 forward） | UNI2 |
+| **DeepPT** | **slide 级**（整片 bulk 表达） | 每细胞 patch → ResNet50 特征（per-cell） | 冻结 ResNet50(ImageNet) + AE 预训练 + 训练官方 MLP 头 | ResNet50-ImageNet |
+| **Pixel2Gene** | **spot 级**（Visium） | 每细胞 patch → HIPT 层级特征 | 冻结 HIPT + **训练官方 ForwardSum 头** | HIPT-4K（DINO） |
+| **SpatialEx** | **spot 级**（Visium 超图） | 每细胞为超图节点，kNN(k=7) 自环 | UNI2 冻结 + 训练超图卷积头（HGNN） | UNI2 |
+| **ST-Net** | **spot 级**（Visium CNN+图） | 每细胞 patch → DenseNet121 | 冻结 DenseNet + 训练线性头（官方 bias 均值初始化） | DenseNet121-ImageNet |
+| **BLEEP** | **spot 级**（Visium 对比） | 每细胞 patch → resnet50 | 冻结 resnet50 + 训练对比投影头 + 参考集检索 | resnet50-ImageNet |
+| **SQUALL** | **spot 级**（224 patch 多模态） | 每细胞 patch = 独立 spot | 冻结 SQUALL 编码器 + 训练 MLP / TransformerDecoder 头 | SQUALL（555M 冻结） |
+| **Phoenix** | **cell 级**（单细胞生成） | 本身 cell 级 | **官方预训练权重**：零样本（不迁移）或微调（flow 可训练，DINOv2 冻结） | DINOv2 ViT-Giant + flow |
+| **STFlow** | **spot 级**（Visium 流匹配） | 每细胞为节点，ROI 批内流匹配 | UNI2 冻结 + 训练流匹配去噪器 | UNI2 |
+| **Path2Space** | **spot 级**（Visium MLP 集成） | 每细胞 patch → CTransPath 特征 | 冻结 CTransPath + **重训官方 MLP 头**（冻结集成不迁移） | CTransPath（Swin） |
+| **GHIST** | **cell 级**（核级分割+图） | 本身 cell 级 | **从头训练** UNet + Framework 图 | 无预训练 |
+| **Hist2ST** | **spot 级**（Visium Transformer+GNN） | 每细胞为节点，ROI 内图 | **从头训练** | 无预训练 |
+
+#### 详细说明
+
+**1. UNI2+MLP（本仓库基线，patch 级 → cell）**
+UNI2 是 patch 级病理基础模型（ViT-L/14）。把每个细胞的 256×256 patch 作为独立输入，
+提取 UNI2 CLS（1536-d）+ 局部中心 token → 训练统一 MLP 头。**无官方预测头**，属"基础模型
+特征 + 线性探针"式。Local+Global 改进在**单次 forward** 内同时取 CLS 与中心 token 网格。
+
+**2. DeepPT（slide 级 → cell）**
+官方 DeepPT 用 ResNet50-ImageNet 整片特征预测 **bulk 表达**（slide 级）。适配：每细胞
+patch → ResNet50 2048-d 特征 → AE(2048→512) 重构预训练 → 训练官方 `MLP_regression`
+头。**ResNet50 冻结**（ImageNet 预训练），仅 AE+头训练。
+
+**3. Pixel2Gene（spot 级 → cell）**
+官方在 **伪 Visium spot**（100µm 六角格）上用 HIPT-4K 提取 576-d 特征 + ForwardSum 头。
+适配（方案 B）：每细胞 patch → HIPT level-1 ViT-256 CLS（384-d）→ **训练官方 ForwardSum
+头**（n_inp 适配 384）。HIPT 冻结（DINO 预训练）。
+
+**4. SpatialEx（spot 级 → cell）**
+官方是 Visium spot 上的**超图卷积**。适配：每细胞为超图节点，用 kNN(k=7)+自环建超图
+（复用 `common/data/slide_tiling.py`，与官方 `Build_hypergraph_spatial_and_HE` 语义一致），
+ROI 内子图 hpnn 归一化。**UNI2 特征冻结**，训练 HGNN 超图卷积头。
+
+**5. ST-Net（spot 级 → cell）**
+官方 ST-Net 是 Visium spot 上的 CNN+GNN。适配：每细胞 patch → DenseNet121 → 线性输出
+（bias 官方均值初始化）。**DenseNet 冻结**（ImageNet），仅线性头训练。
+
+**6. BLEEP（spot 级 → cell）**
+官方 BLEEP 是 Visium spot 双模态对比学习（图像↔表达嵌入对齐）。适配：每细胞 patch →
+resnet50 → 对比投影头训练；推理时用**训练集参考集检索**（top-50 加权聚合参考 spot 表达）。
+**resnet50 冻结**（ImageNet），对比投影头训练。
+
+**7. SQUALL（spot 级 → cell）**
+官方 SQUALL 输入 224×224 patch 输出 spot 级表达（15757 基因）。适配：**每细胞 patch =
+独立 spot**（per-cell patch → forward_rgb → 196 token / mean-pool 特征）。冻结 555M 编码器
+（官方预训练权重）+ 训练统一 MLP 或 **TransformerDecoder 头**。官方**冻结解码器**直接推理
+≈0.02 不迁移；**训练头**有效（0.33-0.35）。基因经 `gene_token_homologs.csv` 映射。
+
+**8. Phoenix（cell 级）**
+官方 Phoenix 本身就是 **per-cell 生成模型**（flow matching，DINOv2 ViT-Giant 编码器 +
+流 transformer，泛癌预训练权重）。适配：直接加载官方 `flow_model.pth`（含 DINOv2，224
+分辨率）。**零样本**（Rep2 直接推理）不迁移（PCC≈0）；**微调**（Rep1，flow 可训练，
+DINOv2 冻结）val_PCC≈0.22。图像按官方 tissue 归一化。
+
+**9. STFlow（spot 级 → cell）**
+官方 STFlow 是 Visium spot 流匹配。适配：每细胞为节点，ROI 批内 SpatialTransformer 训练
+流匹配（log1p+zinb 官方默认先验），评估逐 ROI 采样对齐回 per-cell。**UNI2 特征冻结**
+（替代官方 gigapath，同 1536-d 槽位），训练去噪器。
+
+**10. Path2Space（spot 级 → cell）**
+官方是 154-MLP 集成（22×7 交叉验证），spot 级目标训练。适配：每细胞 patch → CTransPath
+（Macenko 染色归一化 + ctx512 大上下文）768-d → **重训官方 MLP 头**（768→768→313，训练）。
+**CTransPath 冻结**（官方 ctranspath.pth）。冻结集成在 per-cell 上 ~0.04 不迁移；训练头
+0.278-0.295。
+
+**11. GHIST（cell 级）**
+官方 GHIST 本身就是 **per-cell 图方法**（UNet 核分割 + 细胞型 + Framework 图预测核表达）。
+**从头训练**（无预训练编码器），官方 9 损失（分割 CE + 细胞型 CE + 表达 MSE + 免疫/浸润
+MSE + 组成 KLDiv）。需核分割 mask（Xenium 核多边形 → HE 像素 mask，2D 仿射对齐 <0.5px）。
+
+**12. Hist2ST（spot 级 → cell）**
+官方 Hist2ST 是 Visium spot 的 Transformer+GNN。适配：每细胞为节点，ROI（~512 细胞）内
+建局部 kNN 邻接图，自注意力 + GNN。**从头训练**（官方配置：ZINB + bake 自蒸馏 + 100ep +
+lr1e-5；统一协议下不收敛，官方配置才有学习）。
+
+#### 关键观察
+
+- **适配规律**：绝大多数方法是 **spot 级 → per-cell**，统一做法是"每细胞 patch = 一个
+  spot/节点"，再套用原架构（图/超图/检索/流匹配）。SQUALL 是最直接的（patch 即 spot）；
+  DeepPT 从 slide 级降粒度；Phoenix 与 GHIST 本身 cell 级。
+- **实现方式分层**：① 冻结基础模型特征 + 训练头（UNI2/DeepPT/Pixel2Gene/SpatialEx/
+  ST-Net/BLEEP/SQUALL/STFlow/Path2Space，0.21-0.37）；② 官方预训练权重零样本/微调
+  （Phoenix）；③ 从头训练（GHIST/Hist2ST）。
+- **"冻结编码器 + 训练头"是有效范式**：即便官方提供完整模型（SQUALL 解码器、Path2Space
+  集成、BLEEP 检索），**冻结权重直接推理多不迁移**（~0.02-0.04），训练头后才有效
+  （0.28-0.35）——这是项目核心结论"表示 > 架构"的又一佐证。
+
 ## 数据预处理与评估统一流程（公平性保障）
 
 ### 数据预处理（共用 `common/data/`，所有方法读同一数据目录格式）
