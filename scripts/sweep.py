@@ -66,6 +66,7 @@ def _extract_global(args, rep: int, data_dir: str, l1: int) -> None:
     feat = os.path.join(data_dir, f"X_uni2_g{l1}.npy")
     if not os.path.exists(feat):
         _run([sys.executable, "scripts/extract_local_global.py", "--rep", str(rep),
+              "--data_dir", data_dir,
               "--stage", "global", "--l1", str(l1),
               "--output", feat, "--device", "cuda"])
 
@@ -76,6 +77,7 @@ def _extract_local(args, rep: int, data_dir: str, l1: int, l2_values: list[int])
                if not os.path.exists(os.path.join(data_dir, f"X_uni2_l{l2}.npy"))]
     if missing:
         _run([sys.executable, "scripts/extract_local_global.py", "--rep", str(rep),
+              "--data_dir", data_dir,
               "--stage", "local", "--l1", str(l1),
               "--l2_list"] + [str(x) for x in l2_values] + ["--device", "cuda"])
 

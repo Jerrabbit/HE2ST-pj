@@ -83,6 +83,9 @@ def _worker(idx):
 def main() -> None:
     p = argparse.ArgumentParser(description="UNI2+MLP Local-Global 特征提取（单次 forward）")
     p.add_argument("--rep", type=int, choices=[1, 2], required=True)
+    p.add_argument("--data_dir", default=None,
+                   help="数据目录（含 metadata.csv），默认 ~/HE2ST-pj/data/rep{N}。"
+                        "过滤后数据（rep1_f/rep2_f）须显式传入，否则会按未过滤细胞集提取导致特征错位。")
     p.add_argument("--stage", choices=["global", "local"], required=True,
                    help="global=CLS 特征；local=中心 k×k patch token mean（复用单次 forward）")
     p.add_argument("--l1", type=int, default=512, help="Global 块边长（放缩中心）")
@@ -97,7 +100,7 @@ def main() -> None:
     p.add_argument("--max_cells", type=int, default=None, help="调试：限制细胞数")
     args = p.parse_args()
 
-    data_dir = os.path.expanduser(f"~/HE2ST-pj/data/rep{args.rep}")
+    data_dir = args.data_dir or os.path.expanduser(f"~/HE2ST-pj/data/rep{args.rep}")
     meta = pd.read_csv(os.path.join(data_dir, "metadata.csv"))
     if args.max_cells:
         meta = meta.iloc[: args.max_cells]
