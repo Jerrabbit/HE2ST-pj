@@ -44,6 +44,10 @@ def main() -> None:
     from common.data.expression import normalize_expression
     from methods.phoenix.official import PhoenixFlowOnly
 
+    # 111k 细胞单次长 evaluate 循环，file_descriptor 共享策略会耗尽 FD
+    # （"Too many open files"）；file_system 策略把 tensor 落到 /tmp，无持久 FD。
+    torch.multiprocessing.set_sharing_strategy("file_system")
+
     args = parse_args()
     device = args.device
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
