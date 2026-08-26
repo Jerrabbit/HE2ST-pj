@@ -1,8 +1,13 @@
 """Phoenix 官方权重微调后测试：Rep2 全量，统一协议（log1p_zscore 评估）。
 
-用法：
+与训练一致的 token 式推理：加载 PhoenixFlowOnly（DINOv2 冻结、缓存 token），
+从缓存 DINOv2 token 采样（Euler，n_sample_steps），避免 111k patch 的 DINOv2 前向
+与 cpfs 小文件读。
+
+用法（远程 myenv1）：
     python scripts/test_phoenix_finetune.py --ckpt outputs/bench_phoenix_finetune/best.pt \
-        --test_dir data/rep2 --output_dir outputs/bench_phoenix_finetune
+        --test_dir data/rep2 --output_dir outputs/bench_phoenix_finetune \
+        --tokens_dir /tmp/dino_tokens
 """
 from __future__ import annotations
 
@@ -14,12 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Phoenix 微调模型测试")
+    p = argparse.ArgumentParser(description="Phoenix 微调模型测试（token 式，与训练一致）")
     p.add_argument("--ckpt", required=True)
     p.add_argument("--test_dir", required=True)
     p.add_argument("--flow_weights", default="methods/phoenix/flow_model.pth")
-    p.add_argument("--dino_weights", default="methods/phoenix/pytorch_model.bin")
     p.add_argument("--output_dir", default="outputs/bench_phoenix_finetune")
+    p.add_argument("--tokens_dir", default=None,
+                   help="DINOv2 缓存 token 目录（如 /tmp/dino_tokens，cpfs mmap 随机读会 D-state 卡死，"
+                        "务必放本地盘）。缺省在 test_dir 内找 X_phoenix_dino.npy。")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_cells", type=int, default=None)
     p.add_argument("--device", default="cuda")
@@ -30,15 +37,12 @@ def main() -> None:
     import json
 
     import numpy as np
-    import pandas as pd
     import torch
-    from PIL import Image
     from torch.utils.data import DataLoader, Dataset
-    from torchvision import transforms
 
     from common.benchmark.harness import evaluate, save_eval_results_csv
     from common.data.expression import normalize_expression
-    from methods.phoenix.official import IMG_MEAN, IMG_STD, PhoenixOfficial
+    from methods.phoenix.official import PhoenixFlowOnly
 
     args = parse_args()
     device = args.device
@@ -51,44 +55,52 @@ def main() -> None:
         stats = {k: (np.asarray(v, dtype=np.float64) if isinstance(v, list) else v)
                  for k, v in stats.items()}
 
-    tf = transforms.Compose([
-        transforms.Resize((224, 224), transforms.InterpolationMode.BICUBIC),
-        transforms.ToTensor(),
-        transforms.Normalize(tuple(IMG_MEAN[0, :, 0, 0].tolist()),
-                             tuple(IMG_STD[0, :, 0, 0].tolist())),
-    ])
+    class TokenExprDS(Dataset):
+        """(DINOv2 缓存 token (261,1536) fp16 → fp32, gene_expr 归一化)。与训练一致。"""
 
-    class PatchExprDS(Dataset):
-        def __init__(self, paths, expr_norm):
-            self.paths = list(paths)
+        def __init__(self, tokens_path, expr_norm):
+            self.tokens = np.load(tokens_path, mmap_mode="r")   # (N, 261, 1536) fp16
             self.expr = expr_norm
+            assert len(self.tokens) == len(expr_norm), \
+                f"token {self.tokens.shape} vs expr {expr_norm.shape} 行数不匹配"
 
         def __len__(self):
-            return len(self.paths)
+            return len(self.expr)
 
         def __getitem__(self, i):
-            return {"patch": tf(Image.open(self.paths[i]).convert("RGB")),
+            return {"feature": torch.from_numpy(self.tokens[i].astype(np.float32).copy()),
                     "gene_expr": torch.from_numpy(self.expr[i].copy())}
 
-    meta = pd.read_csv(os.path.join(args.test_dir, "metadata.csv"))
-    if args.max_cells:
-        meta = meta.iloc[: args.max_cells]
+    def _tok_path(dirname: str) -> str:
+        if args.tokens_dir:
+            return os.path.join(args.tokens_dir, os.path.basename(dirname),
+                                "X_phoenix_dino.npy")
+        return os.path.join(dirname, "X_phoenix_dino.npy")
+
     expr_raw = np.load(os.path.join(args.test_dir, "gene_expression.npy"))
-    expr_norm, _ = normalize_expression(expr_raw[: len(meta)], "log1p_zscore", stats)
+    if args.max_cells:
+        expr_raw = expr_raw[: args.max_cells]
+    expr_norm, _ = normalize_expression(expr_raw, "log1p_zscore", stats)
     gene_names = None
     gn_path = os.path.join(args.test_dir, "gene_names.txt")
     if os.path.exists(gn_path):
         with open(gn_path) as f:
             gene_names = [ln.strip() for ln in f if ln.strip()]
-    ds = PatchExprDS(meta["patch_path"].tolist(), expr_norm)
+
+    tok_path = _tok_path(args.test_dir)
+    if not os.path.exists(tok_path):
+        raise SystemExit(f"缺少 DINOv2 缓存 token：{tok_path}\n"
+                         f"请先运行 extract_phoenix_dino.py，或指定 --tokens_dir /tmp/dino_tokens")
+    ds = TokenExprDS(tok_path, expr_norm)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
-    model = PhoenixOfficial(num_genes=num_genes, flow_weights=args.flow_weights,
-                            dino_weights=args.dino_weights, device=device,
-                            n_sample_steps=test_steps)
+    model = PhoenixFlowOnly(num_genes=num_genes, flow_weights=args.flow_weights,
+                            device=device, n_sample_steps=test_steps)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    print(f"[Phoenix-test] 加载 best.pt，{test_steps} 步采样，{len(meta)} 细胞", flush=True)
+    model.n_sample_steps = test_steps
+    print(f"[Phoenix-test] 加载 best.pt（token 式），{test_steps} 步采样，{len(ds)} 细胞，"
+          f"token {ds.tokens.shape}", flush=True)
 
     results = evaluate(model, dl, device, "log1p_zscore", stats, details=True)
     json_results = {k: v for k, v in results.items() if not isinstance(v, np.ndarray)}
