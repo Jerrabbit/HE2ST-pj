@@ -227,10 +227,139 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 | **log1p + zinb（官方默认）** | 0.0933 | **0.3626** ✅ |
 | 论文 | — | 0.3-0.4 |
 
-**结论**：① 基因集是主因之一（Top50 HVG 显著高于全基因）；② **归一化空间（log1p）+ 先验
-（zinb，官方默认）是关键**——官方配置下 **Top50 HVG = 0.3626，落在论文 0.3-0.4 区间**，
-**实现正确性确认**。剩余小差距来自数据粒度（Xenium per-cell vs 论文 Visium spot）。
-架构（SpatialTransformer + 流匹配）忠实官方，低分归因为评估协议而非实现。
+**结论**：① 基因集是主因之一（Top50 HVG 显著高于全基因）；② 归一化空间（log1p）+ 先验
+（zinb）是关键——此配置下 **Top50 HVG = 0.3626，落在论文 0.3-0.4 区间**。
+
+> **⚠️ 修正（2026-08-27 专项审查）**：上述"官方配置/实现正确性确认"的说法**不成立**。
+> 专项审查（见"方法实现忠实度专项审查"节）发现本地 STFlow 与官方代码存在**实质偏离**：
+> 训练目标是**速度场 MSE(v, z−ε)**而官方是**去噪器 MSE(pred, 干净z)**；推理从 t=0 积分到
+> t=1 而官方从 t=0.01 起返回最后 pred；超参（hidden 256/64/0.1/0.0/gelu vs 官方
+> 128/128/0.2/0.2/swiglu）与基因面板（313 训练 vs 官方 50 训练）均偏离。故 **0.3626 是
+> "本地适配版"的结果**，落在论文区间只能说明方向正确，不能视为对官方实现的高保真复现。
+
+## 方法实现忠实度专项审查（SQUALL / Phoenix / STFlow，2026-08-27）
+
+> 对三个关键方法做**逐文件、逐细节**的本地实现 vs 官方代码比对，核验"严格按官方实现、
+> 官方权重微调"原则（用户要求）。官方代码位于 `D:\hest_data\codes\`（SQUALL-release /
+> phoenix / STFlow）。结论先行：**SQUALL、Phoenix 忠实度高**（架构逐字节一致、官方权重
+> 严格加载）；**STFlow 忠实度中**（架构层忠实，但训练目标/推理/超参与官方实质偏离）。
+
+### SQUALL — 忠实度：**高**
+
+**官方架构**（`SQUALL_Tutorial/config.yaml`）：多模态病理基础模型。`SquallEncoder`
+= `patch_embed_rgb`(224/16→196 token) + `patch_embed_expr`(15757→256)+ 分辨率感知
+MLP 位置编码（pos_type=mlp）+ 24 层 `MultiWayEncoder`（前 16 层各带独立 mlp_rgb/mlp_expr
+的**模态混合专家 MoME**，后 8 层共享；PreNorm 自注意力 + 相对位置偏置 RPB）。`SquallDecoder`
+= decoder_rgb/expr 各 4 层 + `increase_dim_rgb`(LinearShuffle 1024→15757) + `increase_dim_expr`。
+预训练 = 互补掩码(mask_ratio 0.5)重建 + InfoNCE/ITM 辅助头。权重 `SQUALL_full.pth`
+（598 键裸 state_dict，自包含）。
+
+**比对结论**：
+- `transformer.py` 与官方**逐字节一致**（diff 为空）；`Squall.py` 仅差异为 import stub
+  （远程无 utils/sksurv）与补充 `forward_rgb_to_expr`（官方**发布版没有**，本地补的是官方
+  教程 notebook 所用代码库版本，复用 decoder_rgb+increase_dim_rgb，不改变架构/权重）。
+- 配置直接读官方 `config.yaml`；权重 `SQUALL_full.pth` 严格加载**实测 0 missing/0
+  unexpected**；`forward_rgb→(B,196,1024)`、`forward_rgb_to_expr→(B,56,56,15757)` 与官方一致。
+- 输入尺度：实测 0-255 vs 0-1 使解码输出 **Pearson≈−0.43（负相关）**，本地 `/255.0`（0-1）
+  正确，印证 README"0-1 输入修复"。
+
+**问题清单**：
+- [P1] `scripts/extract_squall.py` docstring 残留"保留 0-255"（代码实为 /255.0），应更正。
+- [P2] 继承官方潜在 bug：`SquallDecoder.forward` 引用未定义变量 `z_rgb`（官方原版同样如此，
+  仅预训练路径可达，本项目只用 forward_rgb/forward_rgb_to_expr，不触发）；`MultiWayMLP`
+  硬编码 fp16（官方 AMP 预训练才匹配，本项目不触发）。
+- [P3] per-cell 适配：patch BILINEAR resize（官方原生 224 tile 无 resize）、res=0.5 常量
+  （忽略 MPP 差异）、`SQUALLDecoderHead` 从头训练（随机初始化，**不使用**官方 decoder 权重，
+  尾部 mean-pool+Linear→313 替代官方 increase_dim_rgb→15757）。
+- [P4] `methods/squall/README.md` 陈旧（仍写"权重阻塞、待定"，与已入表不符）。
+
+**需人工确认**：`SQUALL_full.pth` 是否即 HF `zongxu/SQUALL` 原版权重（本地无法访问 HF）。
+
+### Phoenix — 忠实度：**高**
+
+**重要澄清**：官方 `flow_llama3.py` **并非真的 Llama3 架构**——它与 `flow_simple.py` 是
+同一套 `FlowTransformerModel`，仅 kernel 实现不同（flow_llama3 用 apex `FusedRMSNorm` +
+xformers `SwiGLU` + `flash_attn_func`；flow_simple 纯 torch 等价）。两者均**无 RoPE、无 GQA、
+无因果掩码、无 KV cache**——"Llama3" 仅指采用 Llama 风格组件（RMSNorm/SwiGLU/FlashAttn）。
+
+**官方架构**（`flow_model.pth` 实测，266MB/763 键）：
+- `vision_model.*`（567 键）= DINOv2 ViT-Giant 224-res（40 blocks，1 CLS + **4 reg** +
+  256 patch，pos_embed (1,256,1536)）；
+- flow = `x_projection`(d_genes=1→d_model=512) + `c_projection`(1536→512) + `px/pc_embedding`
+  + `t_embedding` + 2×`ClassicalTransformerBlock` + **8×`FlowTransformerBlock`**（d_model=512,
+  n_heads=8, qkv_bias=False, ffn_mult=4）+ `head`(Linear 512→1, bias=False)；
+- 官方推理：zuko `odeint` **自适应 ODE**（atol=rtol=0.1），`clip(x,0)*std+mean` 反归一化
+  → flow 在 **z-score 后的 log1p** 空间训练。
+
+**比对结论**：
+- 本地 `flow_transformer.py` 与官方 `flow_simple.py` **逐字节一致**；`build_flow()`
+  （d_genes=1, d_model=512, d_cross=512, n_heads=8, n_layers=8, ffn_mult=4, bias=False）
+  与官方权重逐键印证。
+- 权重加载实测：**flow 196 键 + DINOv2 567 键均 strict 0 missing/0 extra/0 shape mismatch**；
+  `build_dino()` 参数（timm vit_giant_patch14_reg4_dinov2, img_size=224, global_pool=token）
+  与官方 README 完全一致。
+- **重要发现**：`pytorch_model.bin`（**518-res** DINOv2）与 `flow_model.pth` 内嵌 DINOv2
+  （224-res）是**完全不同**的权重（逐键 cosine≈0）。本地从 `flow_model.pth` 提取 DINOv2
+  是**正确**的（与 flow 一起出货、训练实际使用的编码器）；`pytorch_model.bin` 在整个
+  Phoenix 管线中实际**从未被读取**。
+- token 顺序：261 = [CLS, **4** reg, 256 patch]（不是 8 reg），pos_embed 仅加在 patch
+  （`no_embed_class=True`）。
+- 微调范围：flow 可训练、DINOv2 冻结（`PhoenixFlowOnly` 只含 flow，用缓存 token），与官方
+  README 的 vision 冻结一致；目标空间 log1p_zscore = 官方 z-scored log1p 语义。
+
+**问题清单**：
+- [高] 零样本基因列顺序风险：`scripts/test_phoenix_zero_shot.py` 用 `xenium_human_breast.npy`
+  （280 基因）按**基因名**映射到 flow 的**token 位置索引**——若该 npy 顺序 ≠ `flow_model.pth`
+  训练面板顺序，则列错位，零样本 PCC≈0 的结论可能部分受此影响。**需人工确认**该 npy 是否为
+  有序训练面板。
+- [中] 采样偏离：固定步 Euler（零样本 50 / 验证 5）vs 官方 zuko 自适应 ODE——数值近似，
+  非逐位一致。
+- [中] 缓存 DINOv2 token 用 fp16（官方实时 fp32），1536 维特征小幅精度损失。
+- [中/低] 生成式采样无固定 seed（不可复现）。
+- [低] 死代码 `dino_weights` 参数（实际未用）；`tests/test_phoenix.py` 传不存在的参数导致
+  TypeError；`pred_log1p` 命名误导（实为 z-score 空间，反归一化在 denorm_to_raw 中）。
+
+### STFlow — 忠实度：**中**
+
+**官方架构**（`stflow/model/transformer.py` + `app/flow/`）：`Denoiser` = image_transform
+(Linear feat→hidden) + TimestepEmbedder(正弦+SiLU MLP) → `SpatialTransformer`；
+`MLPAttnEdgeAggregation` 用 `FrameAveraging(dim=2, 4帧)` 径向坐标增广 + MLP 注意力（消息
+含硬编码 50 基因）；`GeneUpdate` 逐 block 更新基因表达；多层输出取平均 + to_dense_batch。
+官方默认超参：`hidden_dim=128, pairwise_hidden_dim=128, n_layers=4, n_heads=4, dropout=0.2,
+attn_dropout=0.2, n_neighbors=8, activation=swiglu`，Adam `lr=5e-4` `clip_norm=1.0`
+`epochs=100`，`n_sample_steps=5`，`prior=zinb`，数据=KDTree 随机连续空间 patch。
+
+**关键比对（本地 vs 官方）**：
+
+| 维度 | 官方 | 本地 | 判定 |
+|---|---|---|---|
+| 训练目标 | **MSE(pred, 干净z)**（去噪器，denoiser.py L93-96, labels=gene_exp） | **MSE(v_pred, v=z−ε)**（速度场，model.py L102-105） | ❌ **偏离**（本地按论文公式，非官方代码） |
+| 推理 | t=0.01 起，`denoise` 步进，**返回最后 pred**（≈t=0.75，不积分到 1） | t=0 起 Euler 积分到 t=1 返回终点 | ❌ **偏离** |
+| hidden_dim | 128 | 256 | ❌ |
+| pairwise_hidden_dim | 128 | 64 | ❌ |
+| dropout / attn_dropout | 0.2 / 0.2 | 0.1 / 0.0 | ❌ |
+| activation | **swiglu** | gelu（无 swiglu 分支） | ❌ |
+| 优化器 | Adam lr=5e-4 clip=1.0 | AdamW lr=1e-3 无 clip | ❌ |
+| epochs / 早停 | 100 / 20 | 50 / 10（项目统一协议） | ❌（项目规定） |
+| 基因面板 | **50 训练 + 50 评估** | **313 训练**，评估再选 Top50 | ❌ |
+| 数据组织 | 随机连续空间 patch | 网格 ROI 全覆盖（per-cell 适配） | ❌（项目适配） |
+| denoiser / fa / transformer 结构 | — | 逐模块纯 torch 移植（einops→reshape，功能等价） | ✅ 架构层忠实 |
+| 插值公式 | z_t=(1−t)ε+t·z, t~U(0,1) | 同 | ✅ |
+| 先验 | scvi ZINB(tc=1,logits=0.1,zi=0)+log1p | NB(probs=0.525)+zi=0.5+log1p（sigmoid(0.1)≈0.525） | ✅ 数值等价 |
+
+**问题清单**：
+- [严重] 训练目标不一致（速度场 vs 去噪器）——本地更贴近论文文字公式，非官方实现。
+- [严重] 推理流程不一致（t=0 积分到 1 vs 0.01 起点返回 pred）。
+- [严重] 超参全面偏离官方默认（hidden/pairwise/dropout/attn_dropout/activation）。
+- [高] 基因面板不一致（313 训练 vs 官方 50 训练+50 评估）——README 的 Top50 HVG 0.3626
+  是"313 训练 + Top50 评估"，非官方"50 训练+50 评估"。
+- [中] GeneUpdate softplus：官方盘面代码 `non_negative` 参数传参即 TypeError（官方 bug），
+  本地补参数 + softplus 修复——需人工确认官方实际运行版本。
+- [低] 坐标去中心缺失（数学无影响，坐标仅用相对量）、采样 seed 策略不同、批=1 无 padding
+  （语义等价）。
+
+**结论影响**：STFlow 成绩应如实标注为"**本地适配版**"而非"官方配置"。若严格对齐官方，
+需改训练目标为 MSE(pred, z)、推理改为官方 test.py 语义、超参对齐官方默认。
 
 ### 参考结果（编码器微调 / 结构变体，非统一冻结协议，仅作参考）
 
@@ -327,9 +456,9 @@ easy negatives 使二分类判别变难"的统计效应（见上节讨论），�
 | **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
-| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 官方解码器头训练版 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后 |
-| **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel` | ✅ v2 官方架构 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归 |
-| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | ✅ 官方架构纯 torch 移植 | 0.0933 | **log1p + zinb（官方默认）**（gaussian 0.0847 作参考）；Top50 HVG 官方配置 **0.3626**，论文 0.3-0.4 |
+| **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 架构逐字节一致，`SQUALL_full.pth` 严格加载 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后；解码器头为从头训练（非官方 decoder 权重） |
+| **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel`（flow_llama3/simple 同架构，非真 Llama3） | ✅ 架构逐字节一致，权重严格加载 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归；微调 **0.1917**（50 步官方协议）；采样为固定步 Euler（官方 zuko 自适应 ODE） |
+| **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | 🟡 架构忠实；训练目标/推理/超参偏离（速度场 vs 官方去噪，见专项审查） | 0.0933 | log1p + zinb 先验（**本地适配版**）；Top50 HVG **0.3626** 为本地版结果（论文 0.3-0.4 仅方向印证） |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
 | **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |
 | **Hist2ST** | 图 Transformer | 从头 | Convmixer+Transformer+GNN | ✅ 官方架构 | null→**0.2139**（官方配置） | 协议是根因，官方配置有真实学习 |
@@ -500,7 +629,9 @@ lr1e-5；统一协议下不收敛，官方配置才有学习）。
    （best l2=56, 0.3727）→ 最终 50ep **0.3712** → 消融（Local-only 0.3732 主导）→
    lg_ln 变体（无提升，弃用）。曲线见 `local_global_op1_sweep.png` / `local_global_op2_sweep.png`。
 2. ~~GHIST 训练收尾~~ ✅ 完成：**PCC 0.3164**（已补基准表）。
-3. ~~STFlow 实现校验~~ ✅ 完成：官方配置（log1p+zinb）Top50 HVG **0.3626**（见归因专节）。
+3. ~~STFlow 实现校验~~ ✅ 完成：log1p+zinb 先验下 Top50 HVG **0.3626**（见归因专节）。
+   ⚠️ 2026-08-27 专项审查修正：此为**本地适配版**结果（训练目标/超参与官方偏离，见
+   "方法实现忠实度专项审查"节）；如需官方高保真复现需对齐训练目标与超参。
 4. ~~官方预测头补齐~~ ✅ 完成（用户原则：官方有头不换统一 MLP）：
    - ~~Pixel2Gene cell 级改用官方 ForwardSumModel~~ ✅（log1p 空间 0.2913）；
    - ~~SQUALL 官方 TransformerDecoder 头训练~~ ✅（0.3281）。

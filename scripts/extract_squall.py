@@ -1,7 +1,8 @@
 """SQUALL 特征提取 → data_dir/X_squall.npy（1024 维/细胞）。
 
-冻结 SQUALL_full.pth，per-cell 256×256 patch → resize 224×224（保留 0-255 原始值，
-与官方教程 io.imread 一致）→ forward_rgb → (B, 196, 1024) token 嵌入 → mean-pool → (B, 1024)。
+冻结 SQUALL_full.pth，per-cell 256×256 patch → resize 224×224 → **/255.0 归一化到 0-1**
+（官方教程推理喂 0-1；实测 0-255 会使解码输出负相关，见 README"0-1 输入修复"）
+→ forward_rgb → (B, 196, 1024) token 嵌入 → mean-pool → (B, 1024)。
 
 用法（远程服务器）：
     python scripts/extract_squall.py --rep 2 \
