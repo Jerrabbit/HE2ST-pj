@@ -152,8 +152,9 @@ Local+Global 双尺度在相邻切片基准上 **0.3245 → 0.3712（+0.047）**
 | **Hist2ST**（官方配置） | 从头 | 0.2139 | 0.2046 | 0.431 | 0.531 | 0.611 | 0.670 | 独立协议（见下），统一协议下不收敛 |
 | **BLEEP**（冻结 resnet50） | resnet50 冻结 | 0.2131 | 0.2056 | 0.440 | 0.525 | 0.601 | 0.666 | 微调版 0.3235 仅作参考 |
 | Pixel2Gene（spot 级） | HIPT 冻结 | 0.1687 | 0.1729 | 0.379 | 0.510 | 0.622 | 0.644 | spot 内异质性封顶 |
-| Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.409 | 0.474 | 0.539 | 0.592 | 官方 FlowTransformerModel |
-| Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | 313 基因适配有限 |
+| Phoenix v2 | 流模型 | 0.1509 | 0.1304 | 0.409 | 0.474 | 0.539 | 0.592 | ~~零样本~~（2026-08-27 弃用，只做微调） |
+| Phoenix v1 | 流模型 | 0.1001 | 0.0982 | 0.318 | 0.432 | 0.522 | 0.573 | ~~零样本~~（2026-08-27 弃用，只做微调） |
+| **Phoenix 微调**（主结果） | 流模型 | **0.1917** | 0.1528 | 0.455 | 0.488 | 0.550 | 0.6055 | flow-only 微调（DINOv2 冻结）；采样改官方 zuko odeint 后重测中 |
 | STFlow | 流模型 | 0.0933 | 0.1572 | 0.242 | 0.289 | 0.405 | 0.614 | log1p + zinb（官方默认）；gaussian 0.0847 作参考 |
 | Path2Space（冻结集成） | CTransPath 冻结 | 0.0411 | 0.0354 | 0.148 | 0.323 | 0.432 | 0.526 | 冻结 154-MLP 集成不迁移（见下） |
 
@@ -243,6 +244,16 @@ STFlow（Huang et al. 2025）全基因 PCC 0.0847 偏低。按原论文协议做
 > 官方权重微调"原则（用户要求）。官方代码位于 `D:\hest_data\codes\`（SQUALL-release /
 > phoenix / STFlow）。结论先行：**SQUALL、Phoenix 忠实度高**（架构逐字节一致、官方权重
 > 严格加载）；**STFlow 忠实度中**（架构层忠实，但训练目标/推理/超参与官方实质偏离）。
+>
+> **2026-08-27 代码改造**（按用户要求"三个方法严格按官方配置实验"）：
+> - **SQUALL**：已官方，无需改动（架构/权重/config 逐字节一致）。
+> - **Phoenix**：零样本实验弃用（只做微调）；采样从固定步 Euler 改为**官方 zuko odeint**
+>   自适应（atol=rtol=0.1），需远程 `pip install zuko`；微调模型已训练，仅重跑测试。
+> - **STFlow**：训练目标速度场→**官方去噪 MSE(pred,z)**、推理改官方 denoise 公式
+>   （0.01 起点、返回最后 pred）、超参对齐官方（128/128/0.2/0.2/swiglu，含 timm
+>   `SwiGLUPacked`）、GeneUpdate 去 softplus、训练协议改官方（Adam lr=5e-4 + clip=1.0 +
+>   100ep + 早停 20）；**保留 313 基因**（benchmark 可比性）。需全量重训。
+> - 重跑在 LG sweep 完成后进行（GPU 单卡被 LG 占用）。
 
 ### SQUALL — 忠实度：**高**
 
@@ -457,7 +468,7 @@ easy negatives 使二分类判别变难"的统计效应（见上节讨论），�
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
 | **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 架构逐字节一致，`SQUALL_full.pth` 严格加载 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后；解码器头为从头训练（非官方 decoder 权重） |
-| **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel`（flow_llama3/simple 同架构，非真 Llama3） | ✅ 架构逐字节一致，权重严格加载 | 0.1509 / 0.100 | 生成式采样不适配 per-cell 回归；微调 **0.1917**（50 步官方协议）；采样为固定步 Euler（官方 zuko 自适应 ODE） |
+| **Phoenix** | 流匹配（生成） | 流模型 | 官方 `FlowTransformerModel`（flow_llama3/simple 同架构，非真 Llama3） | ✅ 架构逐字节一致，权重严格加载；采样改官方 zuko odeint | **0.1917**（微调） | 零样本已弃用（用户决定只做微调）；微调 flow-only（DINOv2 冻结） |
 | **STFlow** | 流匹配（生成） | UNI2 冻结 | `SpatialTransformer` 去噪器（ROI 级） | 🟡 架构忠实；训练目标/推理/超参偏离（速度场 vs 官方去噪，见专项审查） | 0.0933 | log1p + zinb 先验（**本地适配版**）；Top50 HVG **0.3626** 为本地版结果（论文 0.3-0.4 仅方向印证） |
 | **Path2Space** | MLP 集成 | CTransPath 冻结 | 官方 `MLP_regression_relu_two`（**训练**头） | ✅ 重训方案（冻结集成 ~0.04 不迁移） | **0.2780** | 重训头适配 per-cell，跨切片有效 |
 | **GHIST** | UNet+图 | UNet 从头 | Framework 图模型 | ✅ 官方 Framework 移植 | **0.3164** | 数据管线 + tiling 完成；从零训练追平 UNI2 特征系 |

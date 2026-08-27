@@ -64,6 +64,24 @@ def build_dino(flow_weights_path: str, device: str = "cpu") -> nn.Module:
     return m.eval().to(device)
 
 
+def _odeint_flow(flow, z: torch.Tensor, c: torch.Tensor, device: str,
+                 atol: float = 0.1, rtol: float = 0.1) -> torch.Tensor:
+    """官方 `helpers/inference.py::run_flow`：zuko `odeint` 自适应 ODE 采样。
+
+    flow(x, t, c) 为速度场（条件 c 固定）；zuko 把 t 作为 Python float 传入，
+    包装为 (B,) 张量后调用 flow。返回 t=1 处的 x（(B, G, 1)）。
+    """
+    from zuko.utils import odeint   # 远程 pip install zuko
+    flow = flow.eval()
+    phi = list(flow.parameters())
+
+    def f(t: float, x: torch.Tensor) -> torch.Tensor:
+        t_full = torch.full((x.shape[0],), float(t), device=device)
+        return flow(x, t_full, c)
+
+    return odeint(f, z, 0.0, 1.0, phi=phi, atol=atol, rtol=rtol)
+
+
 class PhoenixOfficial(nn.Module):
     """官方 Phoenix：冻结 DINOv2 + flow（微调时 flow 可训练）。input_type='patch'。
 
@@ -94,16 +112,12 @@ class PhoenixOfficial(nn.Module):
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B,3,224,224) → (B, num_genes) log1p 空间预测（Euler 采样）。"""
+        """(B,3,224,224) → (B, num_genes) log1p 空间预测（官方 zuko odeint 采样）。"""
         device = x.device
         c = self._condition(x)
         B = x.size(0)
         z = torch.randn(B, self.num_genes, 1, device=device)
-        ts = torch.linspace(0.0, 1.0, self.n_sample_steps + 1, device=device)
-        for i in range(self.n_sample_steps):
-            t = ts[i].expand(B)
-            v = self.flow(z, t, c)
-            z = z + (ts[i + 1] - ts[i]) * v
+        z = _odeint_flow(self.flow, z, c, device)
         return z.squeeze(-1)
 
     def training_loss(self, gene_expr: torch.Tensor, x: torch.Tensor,
@@ -141,15 +155,11 @@ class PhoenixFlowOnly(nn.Module):
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, 261, 1536) → (B, num_genes) log1p_zscore 预测（Euler 采样）。"""
+        """(B, 261, 1536) → (B, num_genes) log1p_zscore 预测（官方 zuko odeint 采样）。"""
         B = x.size(0)
         c = x
         z = torch.randn(B, self.num_genes, 1, device=x.device)
-        ts = torch.linspace(0.0, 1.0, self.n_sample_steps + 1, device=x.device)
-        for i in range(self.n_sample_steps):
-            t = ts[i].expand(B)
-            v = self.flow(z, t, c)
-            z = z + (ts[i + 1] - ts[i]) * v
+        z = _odeint_flow(self.flow, z, c, x.device)
         return z.squeeze(-1)
 
     def training_loss(self, gene_expr: torch.Tensor, x: torch.Tensor,

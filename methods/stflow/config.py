@@ -1,12 +1,18 @@
-"""STFlow 配置命名空间（字段名与官方 denoiser.py / transformer.py 一致）。"""
+"""STFlow 配置命名空间（字段名与官方 denoiser.py / transformer.py 一致）。
+
+默认超参对齐官方 `stflow/model/config.py` + `app/flow/train.py`（L212-221）：
+    hidden_dim=128, pairwise_hidden_dim=128, n_layers=4, n_heads=4, dropout=0.2,
+    attn_dropout=0.2, n_neighbors=8, activation='swiglu'。
+"""
 
 
 class SpatialConfig:
     """SpatialTransformer 配置。"""
 
-    def __init__(self, n_genes, feature_dim, hidden_dim=256, d_edge_model=64,
-                 n_layers=4, n_heads=4, dropout=0.1, attn_dropout=0.0,
-                 n_neighbors=8, act='gelu'):
+    def __init__(self, n_genes, feature_dim, hidden_dim=128, d_edge_model=128,
+                 n_layers=4, n_heads=4, dropout=0.2, attn_dropout=0.2,
+                 n_neighbors=8, act='swiglu'):
+        assert hidden_dim % n_heads == 0, f"d_model({hidden_dim}) 必须被 n_heads({n_heads}) 整除"
         self.n_genes = n_genes
         self.d_input = feature_dim
         self.d_model = hidden_dim
@@ -22,9 +28,10 @@ class SpatialConfig:
 class STFlowConfig:
     """Denoiser 配置。"""
 
-    def __init__(self, n_genes, feature_dim, hidden_dim=256, pairwise_hidden_dim=64,
-                 n_layers=4, n_heads=4, dropout=0.1, attn_dropout=0.0,
-                 n_neighbors=8, activation='gelu'):
+    def __init__(self, n_genes, feature_dim, hidden_dim=128, pairwise_hidden_dim=128,
+                 n_layers=4, n_heads=4, dropout=0.2, attn_dropout=0.2,
+                 n_neighbors=8, activation='swiglu'):
+        assert hidden_dim % n_heads == 0, f"hidden_dim({hidden_dim}) 必须被 n_heads({n_heads}) 整除"
         self.n_genes = n_genes
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim

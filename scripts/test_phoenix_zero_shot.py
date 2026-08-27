@@ -1,11 +1,14 @@
-"""Phoenix 官方权重**零样本**评估：Rep2 直接推理（不使用 Rep1）。
+"""⚠️ DEPRECATED（2026-08-27 用户决定：Phoenix 不做零样本，只做微调）。
+
+Phoenix 官方权重**零样本**评估：Rep2 直接推理（不使用 Rep1）。
+保留本脚本仅作参考，不参与实验流程。微调实验入口见 train/test_phoenix_finetune.py。
 
 流程：Rep2 256×256 patch → resize 224（bicubic）+ 官方 tissue 归一化
-→ DINOv2 ViT-Giant 提 256 patch token → flow ODE 采样（Euler）
+→ DINOv2 ViT-Giant 提 256 patch token → flow ODE 采样
 → 官方 stats 反归一化（clip*std+mean = log1p 空间）→ expm1 → raw counts
 → 映射公共基因（xenium_human_breast ↔ 本仓库 313）→ 统一指标（raw 语义）。
 
-用法（远程 myenv1）：
+用法（远程 myenv1，仅参考）：
     python scripts/test_phoenix_zero_shot.py --test_dir data/rep2 \
         --output_dir outputs/bench_phoenix_zero_shot
 """

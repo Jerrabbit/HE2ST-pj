@@ -135,10 +135,14 @@ def _serialize_stats(stats: dict | None) -> dict | None:
 
 
 def train_function(model, train_loader, valid_loader, args, stats) -> dict:
-    """STFlow 训练：逐 ROI 流匹配损失，每 epoch 验证切片评估，val_PCC 早停。"""
+    """STFlow 训练：逐 ROI 去噪目标，每 epoch 验证切片评估，val_PCC 早停。
+
+    训练协议对齐官方 `app/flow/train.py`：Adam（lr=5e-4 由 run 脚本传）、
+    clip_grad_norm=1.0、epochs=100、早停 patience=20（官方 20 次 eval 未提升）。
+    """
     device = args.device
     model = model.to(device)
-    optimizer = torch.optim.AdamW(
+    optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr,
         weight_decay=getattr(args, "weight_decay", 0.0),
     )
@@ -149,7 +153,7 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
 
     best_pcc, best_state = -float("inf"), None
     no_improve = 0
-    patience = int(getattr(args, "patience", 10))
+    patience = int(getattr(args, "patience", 20))      # 官方早停 20
     history = []
 
     for epoch in range(1, args.epochs + 1):
@@ -166,6 +170,7 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             optimizer.zero_grad()
             loss, _det = model.flow_loss(g, f, c)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)   # 官方 clip_norm=1.0
             optimizer.step()
             total += loss.item() * len(roi)
             n += len(roi)
@@ -196,8 +201,8 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
             "history": history,
             "config": {"method": "stflow", "num_genes": model.num_genes,
                        "gene_norm": args.gene_norm,
-                       "prior": getattr(model, "prior", "gaussian"),
-                       "n_sample_steps": getattr(model, "n_sample_steps", 20),
+                       "prior": getattr(model, "prior", "zinb"),
+                       "n_sample_steps": getattr(model, "n_sample_steps", 5),
                        "stats": _serialize_stats(stats)},
         }, os.path.join(args.output_dir, "best.pt"))
     with open(os.path.join(args.output_dir, "history.json"), "w") as f:

@@ -2,8 +2,9 @@
 
 - einops 替换为等价 native torch（view/reshape/[:, None, :]/torch.einsum）。
 - torch_geometric 的 to_dense_batch 替换为本地实现（远程无 torch_geometric）。
-- 修复官方 GeneUpdate 被传入 non_negative 参数但未定义的问题（补上参数并按
-  gene_exp_non_negative 应用 softplus 保持正值，匹配官方意图）。
+- **对齐官方**：GeneUpdate 无 softplus（官方无 non_negative 约束）；activation=swiglu 时
+  mlp_attn/edge_trans/W_output/TransformerBlock.mlp 用 timm SwiGLUPacked（官方同）；
+  mlp_attn 的基因维从官方硬编码 50 按实际 n_genes=313 适配（消息含基因表达差特征）。
 架构零改动（与官方 checkpoint 兼容：无预训练权重，从头训）。
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.vision_transformer import Mlp
+from timm.models.vision_transformer import Mlp, SwiGLUPacked
 
 from .fa import FrameAveraging
 
@@ -44,9 +45,8 @@ def to_dense_batch(x: torch.Tensor, batch: torch.Tensor, fill_value=0.0,
 
 
 class GeneUpdate(nn.Module):
-    def __init__(self, d_model, n_genes, proj_drop=0., non_negative=True):
+    def __init__(self, d_model, n_genes, proj_drop=0.):
         super(GeneUpdate, self).__init__()
-        self.non_negative = non_negative
         self.output = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.GELU(),
@@ -57,10 +57,7 @@ class GeneUpdate(nn.Module):
         )
 
     def forward(self, features):
-        update = self.output(features)
-        if self.non_negative:
-            update = F.softplus(update)
-        return update
+        return self.output(features)
 
 
 class MLPAttnEdgeAggregation(FrameAveraging):
@@ -75,19 +72,34 @@ class MLPAttnEdgeAggregation(FrameAveraging):
             nn.Linear(d_model, d_model * 3),
         )
 
-        # 官方硬编码 50（其 50 基因面板）；按实际 n_genes 适配（message 含基因表达差特征）
-        self.mlp_attn = Mlp(
-            in_features=self.d_head * 2 + self.d_edge_head + n_genes,
-            hidden_features=d_model, out_features=1, drop=proj_drop, norm_layer=nn.LayerNorm
-        )
-        self.edge_trans = Mlp(
-            in_features=self.dim + 1, hidden_features=d_edge_model, out_features=d_edge_model,
-            act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
-        )
-        self.W_output = Mlp(
-            in_features=d_model + d_edge_model, hidden_features=d_model, out_features=d_model,
-            act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
-        )
+        # 官方硬编码 50（其 50 基因面板）；按实际 n_genes 适配（message 含基因表达差特征）。
+        # 官方 swiglu 分支用 SwiGLUPacked（transformer.py L61-73），本地对齐。
+        if activation == "swiglu":
+            self.mlp_attn = SwiGLUPacked(
+                in_features=self.d_head * 2 + self.d_edge_head + n_genes,
+                hidden_features=d_model, out_features=1, drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+            self.edge_trans = SwiGLUPacked(
+                in_features=self.dim + 1, hidden_features=d_edge_model, out_features=d_edge_model,
+                drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+            self.W_output = SwiGLUPacked(
+                in_features=d_model + d_edge_model, hidden_features=d_model, out_features=d_model,
+                drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+        else:
+            self.mlp_attn = Mlp(
+                in_features=self.d_head * 2 + self.d_edge_head + n_genes,
+                hidden_features=d_model, out_features=1, drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+            self.edge_trans = Mlp(
+                in_features=self.dim + 1, hidden_features=d_edge_model, out_features=d_edge_model,
+                act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+            self.W_output = Mlp(
+                in_features=d_model + d_edge_model, hidden_features=d_model, out_features=d_model,
+                act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
+            )
 
         self.attn_dropout = nn.Dropout(attn_drop)
 
@@ -132,7 +144,7 @@ class MLPAttnEdgeAggregation(FrameAveraging):
 
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, d_edge_model, n_genes, n_heads=1, activation="gelu",
-                 attn_drop=0., proj_drop=0., gene_exp_non_negative=True, mlp_ratio=4.0):
+                 attn_drop=0., proj_drop=0., mlp_ratio=4.0):
         super(TransformerBlock, self).__init__()
 
         self.attn = MLPAttnEdgeAggregation(
@@ -140,12 +152,18 @@ class TransformerBlock(nn.Module):
             n_heads=n_heads, proj_drop=proj_drop, attn_drop=attn_drop,
             activation=activation
         )
-        self.mlp = Mlp(
-            in_features=d_model, hidden_features=int(d_model * mlp_ratio),
-            act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
-        )
-        self.gene_updater = GeneUpdate(d_model, n_genes, proj_drop=proj_drop,
-                                       non_negative=gene_exp_non_negative)
+        # 官方 swiglu 分支用 SwiGLUPacked（transformer.py L150-153），本地对齐。
+        if activation == "swiglu":
+            self.mlp = SwiGLUPacked(
+                in_features=d_model, hidden_features=int(d_model * mlp_ratio),
+                drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+        else:
+            self.mlp = Mlp(
+                in_features=d_model, hidden_features=int(d_model * mlp_ratio),
+                act_layer=get_activation(activation), drop=proj_drop, norm_layer=nn.LayerNorm
+            )
+        self.gene_updater = GeneUpdate(d_model, n_genes, proj_drop=proj_drop)
 
     def forward(self, gene_exp, token_embs, coords, neighbor_indices):
         context_token_embs = self.attn(gene_exp, token_embs, coords, neighbor_indices)

@@ -1,18 +1,20 @@
-"""STFlow：整片切片流匹配（Flow Matching）生成模型（官方架构纯 torch 移植）。
+"""STFlow：整片切片流匹配（Flow Matching）生成模型（官方架构/目标/推理对齐官方）。
 
 官方：Huang et al. 2025（arXiv:2506.05361）。整片切片流匹配：
     - 病理基础模型（UNI）提取 tile 特征作为条件；
     - 去噪器（SpatialTransformer）拟合线性插值流 z_t = (1-t)·ε + t·z（z=表达，ε=噪声），
-      速度场 v = z - ε，时间步嵌入；
-    - 推理用 Euler 步 ODE 从高斯先验采样生成表达。
+      **直接预测干净表达 z**（官方 denoiser.py: MSE(pred, labels=gene_exp)，非速度场）；
+    - 推理按官方 test.py 语义：t 从 0.01 起，interpolant.denoise 步进，
+      返回最后一步的模型预测 pred（不积分到 t=1）。
 
 本仓库适配（保留官方架构，仅数据/粒度层）：
     - 用 UNI2 特征作条件（官方 feature_encoder=uni_v1_official 的等价替代，
       UNI2 1536 维，官方 gigapath 槽位 feature_dim=1536）。
-    - 表达空间 = 本仓库统一归一化空间（log1p_zscore）；先验用高斯 N(0,1)。
+    - 表达空间 = log1p（zinb 先验，官方 normalize 语义）；**313 基因**（保留 benchmark 可比性，
+      官方为 50 HVG）。
     - **ROI 级**：用 common/data/slide_tiling.tile_rois 把细胞切成空间 ROI，
       每个 ROI 作为 SpatialTransformer 的一批（[1, N_cells, G] + 特征 + 坐标）。
-    - 推理：从噪声起按 Euler 步解到 t=1，逐 ROI 预测，映射回 per-cell。
+    - 训练目标/推理公式/默认超参对齐官方（denoising + denoise 公式 + 128/128/0.2/0.2/swiglu）。
 
 模型代码在 methods/stflow/（fa.py / transformer.py / denoiser.py 官方移植，
 einops、torch_geometric、scvi 已替换为纯 torch / 高斯先验）。
@@ -35,14 +37,16 @@ class STFlow(nn.Module):
         self,
         num_genes: int,
         feature_dim: int = 1536,
-        hidden_dim: int = 256,
-        edge_dim: int = 64,
+        hidden_dim: int = 128,           # 官方默认 128
+        edge_dim: int = 128,             # 官方 pairwise_hidden_dim 128
         n_layers: int = 4,
         n_heads: int = 4,
         n_neighbors: int = 8,
-        dropout: float = 0.1,
-        n_sample_steps: int = 20,
-        prior: str = "gaussian",   # gaussian（默认）| zinb（官方默认，log1p 空间）
+        dropout: float = 0.2,            # 官方默认 0.2
+        attn_dropout: float = 0.2,       # 官方默认 0.2
+        activation: str = "swiglu",      # 官方默认 swiglu
+        n_sample_steps: int = 5,         # 官方默认 5
+        prior: str = "zinb",             # 官方默认 prior_sampler=zinb
         seed: int = 0,
     ):
         super().__init__()
@@ -55,7 +59,8 @@ class STFlow(nn.Module):
         config = STFlowConfig(
             n_genes=num_genes, feature_dim=feature_dim, hidden_dim=hidden_dim,
             pairwise_hidden_dim=edge_dim, n_layers=n_layers, n_heads=n_heads,
-            dropout=dropout, n_neighbors=n_neighbors,
+            dropout=dropout, attn_dropout=attn_dropout, n_neighbors=n_neighbors,
+            activation=activation,
         )
         self.denoiser = Denoiser(config)
 
@@ -90,19 +95,19 @@ class STFlow(nn.Module):
         img_features: torch.Tensor,  # (1, N, F) UNI2 条件
         coords: torch.Tensor,        # (1, N, 2)
     ) -> tuple[torch.Tensor, dict]:
-        """线性插值流匹配损失（官方 interpolant 语义，prior 可配，log1p/zscore 空间）。
+        """官方去噪训练目标：模型预测**干净表达 z**，MSE(pred, z)。
 
-        z_t = (1-t)·ε + t·z，v_target = z - ε；去噪器从 (z_t, t, 特征, 坐标) 预测 v。
+        官方 train.py L85-92: `noisy_exp, t = corrupt_exp(gene_exp); pred, loss =
+        model(noisy_exp, ..., labels=gene_exp)`；denoiser.py L93-96:
+        `loss = MSE(prediction, labels)`。插值 z_t = (1-t)·ε + t·z，t~U(0,1)。
         """
         B, N, G = gene_expr.shape
         z = gene_expr
         eps = self._sample_prior(z.shape, z.device)
         t = torch.rand(B, device=gene_expr.device)          # 每个 ROI 一个 t
         z_t = (1 - t[:, None, None]) * eps + t[:, None, None] * z
-        v_target = z - eps                                   # (B, N, G)
-
-        v_pred = self.denoiser.inference(z_t, img_features, coords, t)
-        loss = nn.functional.mse_loss(v_pred, v_target)
+        pred = self.denoiser.inference(z_t, img_features, coords, t, predict=True)
+        loss = nn.functional.mse_loss(pred, z)
         return loss, {"flow_loss": loss}
 
     # ---------- 推理侧（ROI 级） ----------
@@ -113,14 +118,25 @@ class STFlow(nn.Module):
         coords: torch.Tensor,        # (1, N, 2)
         device: str = "cuda",
     ) -> torch.Tensor:
-        """对一个 ROI 做 Euler ODE 采样：先验 → t=1 → (1, N, G) 归一化表达。"""
+        """官方 test.py 推理语义：t 从 0.01 起，denoise 步进，**返回最后一步的 pred**。
+
+        官方 test.py L62-79：ts=linspace(0.01, 1.0, n)；逐对 (t1,t2)：
+            pred = model.inference(exp_t1, ..., t1, predict=True)
+            最后一步 break，其余 `exp_t1 = denoise(pred, exp_t1, t1, d_t)`
+                = exp_t1 + d_t·(pred - exp_t1)/(1 - t1)（interpolant.py L32-38）。
+        sample = pred（模型在倒数第二个 t 处的干净表达预测）。
+        """
         B, N, F = img_features.shape
         torch.manual_seed(self.seed)
         z = self._sample_prior((B, N, self.num_genes), device)
 
-        ts = torch.linspace(0.0, 1.0, self.n_sample_steps + 1, device=device)
-        for i in range(self.n_sample_steps):
-            t = ts[i].expand(B)
-            v = self.denoiser.inference(z, img_features, coords, t)
-            z = z + (ts[i + 1] - ts[i]) * v
-        return z
+        ts = torch.linspace(0.01, 1.0, self.n_sample_steps, device=device)
+        ts = ts[:, None].expand(self.n_sample_steps, B)      # (steps, B)
+        pred = None
+        for i, (t1, t2) in enumerate(zip(ts[:-1], ts[1:])):
+            pred = self.denoiser.inference(z, img_features, coords, t1, predict=True)
+            if i == self.n_sample_steps - 2:
+                break                                          # 最后一步不 denoise
+            dt = t2 - t1
+            z = z + dt[:, None, None] * (pred - z) / (1.0 - t1[:, None, None])
+        return pred

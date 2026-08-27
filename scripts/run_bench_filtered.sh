@@ -171,13 +171,15 @@ python scripts/test.py --method $m --img_size 224 \
   --ckpt $D/best.pt --test_dir data/rep2_f \
   --gene_norm $GN --output_dir $D --device $DEV >> logs/bench_${m}_train.log 2>&1
 
-# ---------- 11. STFlow（log1p + zinb 官方默认） ----------
+# ---------- 11. STFlow（官方协议：log1p + zinb 先验 + 官方超参/训练协议） ----------
+# 官方 train.py 默认：hidden_dim/pairwise=128、dropout/attn_dropout=0.2、activation=swiglu
+# （已为 methods/stflow 默认值）、Adam lr=5e-4、clip=1.0、epochs=100、patience=20。
 m=stflow; D=outputs/bench_${m}_f
 if [ ! -f "$D/best.pt" ]; then
   say "== $m train =="
   python scripts/train.py --method $m --gene_norm log1p --prior zinb --n_sample_steps 50 \
     --train_dir data/rep1_f --valid_dir data/rep2_f \
-    --epochs $EPOCHS --patience $PATIENCE --lr $LR \
+    --epochs 100 --patience 20 --lr 5e-4 \
     --output_dir $D --device $DEV > logs/bench_${m}_train.log 2>&1
 fi
 say "== $m test =="
