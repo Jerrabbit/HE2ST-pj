@@ -369,8 +369,46 @@ attn_dropout=0.2, n_neighbors=8, activation=swiglu`，Adam `lr=5e-4` `clip_norm=
 - [低] 坐标去中心缺失（数学无影响，坐标仅用相对量）、采样 seed 策略不同、批=1 无 padding
   （语义等价）。
 
-**结论影响**：STFlow 成绩应如实标注为"**本地适配版**"而非"官方配置"。若严格对齐官方，
-需改训练目标为 MSE(pred, z)、推理改为官方 test.py 语义、超参对齐官方默认。
+**结论影响**：STFlow 已按官方配置重跑（2026-08-28 完成）：改训练目标为 MSE(pred, z)、
+推理改官方 denoise 语义、超参对齐官方默认（128/128/0.2/0.2/swiglu + Adam/5e-4/100ep），
+过滤后全基因 PCC **0.2764**（旧本地适配版 0.0997），Top50 HVG **0.5476**（旧 0.3626）。
+
+### 三个方法的 cell-level 适配与基因/输入映射细节（2026-08-28 补充）
+
+**SQUALL（原生 patch/spot 级 → per-cell）**
+- 原生粒度：224×224 H&E 图像块 + 56×56 表达网格（互补掩码预训练），本质"一个图像块 =
+  一个 spot"。
+- cell-level 适配：每细胞 256×256 patch（质心居中）→ resize 224×224 → 视为独立 spot →
+  冻结 `forward_rgb` → 196×1024 tokens。
+  - **统一 MLP**：tokens mean-pool → 1024-d（`X_squall.npy`）→ 训练 MLP(1024→512→256→313)。
+  - **解码器头**：保留 196×1024 tokens（`X_squall_tokens.npy`）→ 训练官方架构
+    `TransformerDecoder`（depth=4）→ mean-pool → 313。
+  - 位置编码 `res=0.5` 常量（per-cell 同 MPP）。
+- 基因：官方解码器输出 15757 基因，per-cell 适配用**冻结编码器特征 + 训练头**直接回归 313。
+
+**Phoenix（原生 cell 级；280→313 基因映射机制）**
+- flow 的基因维度**不是固定 280**：`px_embedding = nn.Embedding(1024, d_model)`
+  （`flow_transformer.py` L490），基因 i 的身份由**面板位置索引**决定，基因数 ≤ 1024 即兼容。
+- 微调 280→313：官方权重初始化 flow（位置 0-279 = 官方 280 基因映射，280+ 未训练）→ 在
+  rep1（我们 313 基因面板）上微调**整个 flow**（px_embedding + blocks + head，
+  `AdamW(model.flow.parameters())`）→ 每个位置 i 重新学习预测"我们的"第 i 个基因。
+  官方权重提供"组织→表达"强先验，微调重新接线到 313 面板（transfer learning）。
+- 零样本不做（用户决定），规避官方面板基因顺序错位风险（审查标记的"零样本基因列顺序
+  风险"只影响零样本路径，微调已重训无此问题）。
+
+**STFlow（spot 级 → per-cell，官方配置版）**
+- 数据：rep1_f/rep2_f（过滤后），per-cell；条件 = UNI2 冻结 1536-d；表达 log1p。
+- ROI 组织：密度自适应网格 → 每 ROI ~256 细胞（重叠 50%、最小 32），每 ROI 一批
+  `[1,N,G]+特征+坐标`。
+- 模型（148 万参数，128/128/0.2/0.2/swiglu）：`Denoiser` = image_transform
+  (Linear 1536→128) + TimestepEmbedder(正弦+SiLU) → `SpatialTransformer`（4 block；
+  每 block = `MLPAttnEdgeAggregation`[kNN k=8 + `FrameAveraging` 径向坐标 + MLP 注意力
+  含基因表达差 + SwiGLU] + 残差 + `GeneUpdate`[→313]），多层输出取平均。
+- 训练（官方去噪）：t~U(0,1)，z_t=(1-t)ε+t·z（ε=**zinb 先验**），`MSE(pred, 干净z)`；
+  Adam lr=5e-4 + clip=1.0 + 100ep + 早停 20。
+- 推理（官方）：zinb 先验，ts=linspace(0.01,1.0,50)，迭代 `z += dt·(pred−z)/(1−t)`，
+  返回最后一步 pred。
+- 评估：逐 ROI 采样 → 回填 per-cell → 统一指标。结果 **PCC 0.2764**。
 
 ### 参考结果（编码器微调 / 结构变体，非统一冻结协议，仅作参考）
 
