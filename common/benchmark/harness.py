@@ -352,6 +352,7 @@ def save_eval_results_csv(
                 w.writerow([int(k), float(a)])
 
     gene_path = f"{csv_path}_genes.csv"
+    gene_pcc_path = f"{csv_path}_gene_pcc.csv"
     if gene_names is not None and "gene_pccs" in results:
         has_ssim = "gene_ssims" in results
         with open(gene_path, "w", newline="") as f:
@@ -365,7 +366,13 @@ def save_eval_results_csv(
                     float(results["gene_aurocs"][i]),
                     float(results["gene_ssims"][i]) if has_ssim else "",
                 ])
-    out = {"summary": csv_path, "genes": gene_path}
+        # 专门输出逐基因 PCC（每方法一个 gene_pcc.csv），供误差棒（mean±std）与下游分析
+        with open(gene_pcc_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["gene", "PCC"])
+            for i, g in enumerate(gene_names):
+                w.writerow([g, float(results["gene_pccs"][i])])
+    out = {"summary": csv_path, "genes": gene_path, "gene_pcc": gene_pcc_path}
     if curve_path:
         out["topk_curve"] = curve_path
     return out
