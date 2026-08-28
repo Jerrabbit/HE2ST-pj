@@ -105,6 +105,7 @@ methods = [
     ("Path2Space", 0.2946, False),
     ("GHIST", 0.2926, False),
     ("DeepPT (ResNet50)", 0.2791, False),
+    ("STFlow（官方协议）", 0.2764, False),
     ("ST-Net", 0.2520, False),
     ("BLEEP", 0.2322, False),
     ("Hist2ST", 0.2049, False),
