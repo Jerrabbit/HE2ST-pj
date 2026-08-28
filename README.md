@@ -440,6 +440,31 @@ dry-run 看分布后取整）：
 特征按保留行切片复用（`scripts/filter_cells.py`，mmap 分块直接写避开 cpfs 慢路径），
 GHIST 数据按 cell_id 过滤。过滤后数据目录 `data/rep1_f`、`data/rep2_f`。
 
+## 数据过滤与"不在 H&E 上"细胞说明（2026-08-29 更新）
+
+**结论**：不再做 min_genes/min_umis 过滤，也不做额外的"H&E 空白"过滤，**直接使用
+原 rep1（164,000）→ rep2（111,345）"未过滤"数据**作为本阶段 benchmark。
+
+**细胞计数的来源**：Xenium 细胞分割（`outs/cells.csv`）→ h5ad → 本仓库 rep1/rep2
+（metadata）。raw 分割：rep1 = 167,780、rep2 = 118,752。
+
+**"不在 H&E 上"的细胞**（用户核查，2026-08-29）：
+- 注册 H&E 图像相对 Xenium 空间坐标是 **y 翻转**的（`image_row ≈ −2.749·y + 11313`），
+  物理覆盖范围 y ∈ [−3124, 4162] μm；Morphology FOV 为 y ∈ [0, 5478] μm。
+- **rep1**：H&E 覆盖完整 FOV，raw 167,780 个细胞全部在 H&E 上（0 个 off-H&E）；
+  h5ad 另因其他 QC/预处理剔除 3,780 个（与 H&E 无关）。
+- **rep2**：H&E 未覆盖 Morphology 底部条带（y > 4162 μm），raw 中 **6,835 个
+  （5.8%）细胞不在 H&E 上**；这些细胞在 **h5ad 阶段（111,555 个）已被排除**，
+  从未进入本仓库数据（rep2 metadata = 111,345）。
+- 因此"不在 H&E 上"的细胞 = rep2 已上游排除的这部分；**无需额外的 H&E 空白过滤**。
+- 附带说明：rep1 与 rep2 的上游处理不对称（rep2 按 H&E 覆盖滤过、rep1 没有），
+  论文描述数据时应注明。
+
+**本阶段 benchmark（2026-08-29 起）**：10 方法（除 Phoenix/SQUALL/LG）在
+rep1 → rep2（未过滤）上单次运行；评估新增 **SSIM**（空间表达图结构相似度）与
+**全 k=10..313 Top-k 曲线**（存 `topk_curve.csv`）；PCC 柱状图带误差棒
+（= ±1 std 逐基因 PCC）。Local+Global 完整调参（op1/op2 sweep → 最终 50ep）最后进行。
+
 ### 过滤后基准结果（rep1_f → rep2_f，统一协议，含新评估指标）
 
 > 评估扩展：新增 **cell_PCC**（逐细胞跨基因，log1p 空间平均）与 **Top-k 全值（k=10..100）**。
