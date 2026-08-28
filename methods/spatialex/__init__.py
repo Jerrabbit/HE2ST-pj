@@ -177,12 +177,13 @@ def _compute_metrics(
     stats: dict | None,
     topk_ks: tuple | None = None,
     details: bool = False,
+    coords: np.ndarray | None = None,
 ) -> dict:
     """与 harness.evaluate 完全一致的指标计算（向量化，PCC/SPCC 归一化空间，Top-k/AUROC 逆变换 raw）。"""
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
     return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
-                                      topk_ks, details=details)
+                                      topk_ks, details=details, coords=coords)
 
 
 def evaluate_slide(
@@ -220,7 +221,8 @@ def evaluate_slide(
     y_count[y_count == 0] = 1.0
     y_pred /= y_count[:, None]
 
-    results = _compute_metrics(expr_norm, y_pred, gene_norm, stats, details=details)
+    results = _compute_metrics(expr_norm, y_pred, gene_norm, stats,
+                               topk_ks="full", details=details, coords=coords)
     if details:
         results["_gene_names"] = load_gene_names(test_dir)
     os.makedirs(output_dir, exist_ok=True)

@@ -1,8 +1,11 @@
-"""细胞过滤：去除低表达/空白细胞，产出过滤后数据目录（特征文件按行切片复用）。
+"""细胞过滤：去除低表达/空白细胞或"不在 H&E 上"的细胞，产出过滤后数据目录。
 
-QC 指标（标准 Xenium 质控）：
-    n_genes = 表达>0 的基因数；umis = 总 UMI（raw counts 求和）
-    保留 n_genes >= --min_genes 且 umis >= --min_umis 的细胞。
+两种模式：
+1. **QC 过滤**（默认）：n_genes = 表达>0 的基因数；umis = 总 UMI（raw counts 求和）
+   保留 n_genes >= --min_genes 且 umis >= --min_umis 的细胞。
+2. **H&E 空白过滤**（--he_filter <H&E 图像>）：不设 min_genes/min_umis，只滤掉
+   **中心 + 4 邻域点全落在 H&E 空白（无染色组织）**的细胞（"不在 H&E 上"），
+   其余细胞全部保留（--blank_thresh 可调空白灰度阈值，默认 235）。
 
 产出 out_dir/：
     metadata.csv / gene_expression.npy / gene_names.txt / patches/（保留细胞）
@@ -10,11 +13,14 @@ QC 指标（标准 Xenium 质控）：
     避免大文件（如 SQUALL token 131GB）整载入内存）。
 
 用法（远程 myenv1）：
-    # 先 --dry-run 看各阈值保留比例，再正式执行
+    # H&E 空白过滤（新机制，无 min_genes/min_umis）：
+    python scripts/filter_cells.py --src_dir data/rep1 --out_dir data/rep1_he \
+        --he_filter /cpfs01/.../he_images/Xenium_FFPE_Human_Breast_Cancer_Rep1_he_image.ome.tif \
+        --exclude_features X_phoenix_dino.npy,X_squall_tokens.npy --no_copy_patches \
+        --ghist_src data/ghist_rep1 --ghist_out data/ghist_rep1_he
+    # QC 过滤（旧机制）：
     python scripts/filter_cells.py --src_dir data/rep1 --out_dir data/rep1_f \
         --min_genes 200 --min_umis 500 --dry-run
-    python scripts/filter_cells.py --src_dir data/rep1 --out_dir data/rep1_f \
-        --min_genes 200 --min_umis 500
 """
 from __future__ import annotations
 
@@ -43,6 +49,43 @@ def qc_mask(expr: np.ndarray, min_genes: int, min_umis: int) -> np.ndarray:
     n_genes = (expr > 0).sum(axis=1)
     umis = expr.sum(axis=1)
     return (n_genes >= min_genes) & (umis >= min_umis)
+
+
+def _he_on_tissue_mask(
+    he_path: str,
+    coords: np.ndarray,
+    blank_thresh: int = 235,
+) -> np.ndarray:
+    """H&E 空白过滤：返回 bool mask（True = 在 H&E 上，保留）。
+
+    判据：细胞中心 + 4 个邻域点（±8px，上下左右）**全部**落在 H&E 空白区域
+    （灰度 >= blank_thresh，即近白/无染色组织）→ 该细胞视为"不在 H&E 上"→ 滤掉。
+    至少一个采样点有组织（灰度 < blank_thresh）→ 视为在 H&E 上 → 保留。
+
+    坐标约定：coords 第 0 列 = col(x)，第 1 列 = row(y)，与 metadata 的
+    x_centroid/y_centroid 一致；灰度图 (H=row, W=col) 按 [row, col] 索引。
+    """
+    import tifffile
+
+    im = tifffile.imread(he_path)
+    if im.ndim == 2:
+        gray = im.astype(np.uint8)
+    elif im.shape[0] == 3:  # (C,H,W)
+        gray = im.transpose(1, 2, 0).mean(2).astype(np.uint8)
+    else:                    # (H,W,C)
+        gray = im.mean(2).astype(np.uint8)
+    H, W = gray.shape
+    tissue = gray < blank_thresh  # True = 有染色组织
+
+    x = coords[:, 0]
+    y = coords[:, 1]
+    pts = [(0, 0), (-8, 0), (8, 0), (0, -8), (0, 8)]
+    on = np.zeros(len(coords), dtype=bool)
+    for dx, dy in pts:
+        xi = np.clip(np.round(x + dx).astype(np.int64), 0, W - 1)
+        yi = np.clip(np.round(y + dy).astype(np.int64), 0, H - 1)
+        on |= tissue[yi, xi]
+    return on
 
 
 def _subset_feature(src_path: str, out_path: str, idx: np.ndarray):
@@ -91,22 +134,43 @@ def main() -> None:
                    help="GHIST 数据目录（可选，过滤其 CSV 表达/核/avgexp）")
     p.add_argument("--ghist_out", default=None,
                    help="过滤后 GHIST 数据目录（与 --ghist_src 成对给出）")
+    p.add_argument("--he_filter", default=None,
+                   help="H&E 图像路径：启用'不在 H&E 上即滤'模式——只滤中心+4 邻域点全落在"
+                        "空白（近白/无染色组织）的细胞，忽略 min_genes/min_umis")
+    p.add_argument("--blank_thresh", type=int, default=235,
+                   help="空白灰度阈值（灰度>=此值视为空白，默认 235）")
     args = p.parse_args()
 
     meta, expr, gene_names = _load_src(args.src_dir)
     N = expr.shape[0]
-    mask = qc_mask(expr, args.min_genes, args.min_umis)
-    idx = np.flatnonzero(mask)
     n_genes = (expr > 0).sum(1)
     umis = expr.sum(1)
 
-    print(f"[filter] {args.src_dir}: {N} 细胞 → 保留 {len(idx)} "
-          f"({len(idx) / max(N, 1):.1%})  [min_genes>={args.min_genes}, "
-          f"min_umis>={args.min_umis}]", flush=True)
-    print(f"  n_genes 分布: p50={np.median(n_genes):.0f} p10={np.percentile(n_genes,10):.0f} "
-          f"p5={np.percentile(n_genes,5):.0f}", flush=True)
-    print(f"  umis 分布:   p50={np.median(umis):.0f} p10={np.percentile(umis,10):.0f} "
-          f"p5={np.percentile(umis,5):.0f}", flush=True)
+    if args.he_filter:
+        mask = _he_on_tissue_mask(
+            args.he_filter,
+            meta[["x_centroid", "y_centroid"]].to_numpy(float),
+            blank_thresh=args.blank_thresh,
+        )
+        idx = np.flatnonzero(mask)
+        print(f"[filter] {args.src_dir}: {N} 细胞 → 保留 {len(idx)} "
+              f"({len(idx) / max(N, 1):.1%})  [H&E 空白过滤 {args.he_filter}, "
+              f"blank>={args.blank_thresh}]", flush=True)
+        print(f"  ⚠ 滤掉 {N - len(idx)} 个'不在 H&E 上'细胞（中心+4 邻域点全空白）", flush=True)
+        print(f"  n_genes 分布(全部): p50={np.median(n_genes):.0f} p10={np.percentile(n_genes,10):.0f} "
+              f"p5={np.percentile(n_genes,5):.0f}", flush=True)
+        print(f"  umis 分布(全部):   p50={np.median(umis):.0f} p10={np.percentile(umis,10):.0f} "
+              f"p5={np.percentile(umis,5):.0f}", flush=True)
+    else:
+        mask = qc_mask(expr, args.min_genes, args.min_umis)
+        idx = np.flatnonzero(mask)
+        print(f"[filter] {args.src_dir}: {N} 细胞 → 保留 {len(idx)} "
+              f"({len(idx) / max(N, 1):.1%})  [min_genes>={args.min_genes}, "
+              f"min_umis>={args.min_umis}]", flush=True)
+        print(f"  n_genes 分布: p50={np.median(n_genes):.0f} p10={np.percentile(n_genes,10):.0f} "
+              f"p5={np.percentile(n_genes,5):.0f}", flush=True)
+        print(f"  umis 分布:   p50={np.median(umis):.0f} p10={np.percentile(umis,10):.0f} "
+              f"p5={np.percentile(umis,5):.0f}", flush=True)
     if args.dry_run:
         # 目标：去掉底部 ~10% 低表达/空白细胞 → 用 p10 阈值估算联合保留比例
         g10 = float(np.percentile(n_genes, 10))

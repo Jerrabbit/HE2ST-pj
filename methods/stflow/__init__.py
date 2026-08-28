@@ -107,7 +107,8 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
         y_pred_raw = _invert_normalization(y_pred[keep], gene_norm, stats)
         results = compute_metrics_vectorized(expr_norm[keep], y_pred[keep],
                                              y_true_raw, y_pred_raw,
-                                             details=details)
+                                             topk_ks="full", details=details,
+                                             coords=coords[keep])
     if details:
         results["_gene_names"] = load_gene_names(test_dir)
     if output_dir is not None:

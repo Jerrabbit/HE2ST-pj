@@ -164,16 +164,18 @@ def _predict_roi(model, sub_patches, sub_coords, device) -> np.ndarray:
 
 def _compute_metrics(y_true_norm: np.ndarray, y_pred: np.ndarray,
                      gene_norm: str, stats: dict | None,
-                     details: bool = False) -> dict:
+                     details: bool = False,
+                     coords: np.ndarray | None = None) -> dict:
     """与 common/benchmark/harness.evaluate() 完全一致的指标语义（向量化）。
 
     PCC/SPCC 在归一化空间逐基因；Top-k/AUROC 经 _invert_normalization 逆变换到
-    raw counts 语义后计算（与 harness 相同）。
+    raw counts 语义后计算（与 harness 相同）。coords 提供时额外算空间 SSIM。
     """
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
     return compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
-                                      details=details)
+                                      topk_ks="full", details=details,
+                                      coords=coords)
 
 
 def _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm: str,
@@ -223,7 +225,7 @@ def _predict_slide_arrays(model, coords, patches, expr_norm, gene_norm: str,
         results = nan
     else:
         results = _compute_metrics(expr_norm[keep], y_pred[keep], gene_norm, stats,
-                                   details=details)
+                                   details=details, coords=coords[keep])
     if details:
         results["_gene_names"] = load_gene_names(test_dir)
     if output_dir is not None:

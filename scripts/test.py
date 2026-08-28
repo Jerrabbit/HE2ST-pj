@@ -108,7 +108,7 @@ def main() -> None:
 
     stats = ref_stats or ds.stats
     results = evaluate(model, loader, args.device, args.gene_norm, stats,
-                       details=True)
+                       topk_ks="full", details=True, ssim=True)
     # 逐基因 numpy 数组不写入 JSON（单独 CSV 保存）；摘要部分正常序列化
     json_results = {k: v for k, v in results.items() if not isinstance(v, np.ndarray)}
     print(json.dumps(json_results, ensure_ascii=False, indent=2))

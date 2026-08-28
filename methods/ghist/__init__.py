@@ -157,6 +157,14 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
         test_dir, gene_norm, stats)
     n_cells = expr_norm.shape[0]
 
+    # 逐核质心（SSIM 空间栅格化用）：核 mask 像素值 == cell_id → center_of_mass 一次算全部
+    from scipy import ndimage
+    centroids = ndimage.center_of_mass(nuclei, labels=nuclei, index=cell_ids)
+    coords = np.asarray(centroids, dtype=np.float32)[:, ::-1]  # (row, col) → (x, y) = (col, row)
+    if np.isnan(coords).any():  # mask 缺失的 cell 用中位坐标兜底
+        med = np.nanmedian(coords, axis=0)
+        coords = np.where(np.isnan(coords), med, coords)
+
     if ref_expr is None:
         ref_expr = expr_norm[:N_REF]                              # (n_ref, G)
     ref_orig = torch.from_numpy(ref_expr.astype(np.float32)).to(device)  # (n_ref, G)
@@ -173,7 +181,8 @@ def evaluate_slide(model, test_dir: str, gene_norm: str, stats: dict | None,
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats_used)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats_used)
     results = compute_metrics_vectorized(y_true_norm, y_pred, y_true_raw, y_pred_raw,
-                                         details=details)
+                                         topk_ks="full", details=details,
+                                         coords=coords[:n_cells])
     if details:
         results["_gene_names"] = list(gene_names)
     if output_dir is not None:

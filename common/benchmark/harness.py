@@ -8,7 +8,9 @@
 评估语义（与 HEST 通用 benchmark 一致）：
     - PCC / SPCC：逐基因（跨细胞）相关性，取均值
     - cell_PCC：逐细胞（跨基因，log1p 计数空间）相关性，取均值
-    - Top-k：逐细胞，预测与真实 top-k 高表达基因的重合率，取均值（默认 k=10..100）
+    - SSIM：逐基因空间表达图（坐标栅格化）的结构相似度，取均值（需 coords）
+    - Top-k：逐细胞，预测与真实 top-k 高表达基因的重合率，取均值（默认 k=10..100；
+      topk_ks='full' 时算全 k=1..G 曲线）
     - AUROC：逐基因，以 raw counts>0 为标签，取均值
 PCC/SPCC/cell_PCC 在归一化空间（预测与真值同尺度，逐基因单调不变）；Top-k/AUROC
     按 gene_norm 将预测与真值逆变换回 raw counts 语义后计算。
@@ -52,18 +54,20 @@ def predict(
     """
     model.to(device)  # 保证模型与输入同设备（test.py 从 CPU checkpoint 加载后直接评估也能跑）
     model.eval()
-    true_list, pred_list = [], []
+    true_list, pred_list, coord_list = [], [], []
     with torch.no_grad():
         for batch in dataloader:
             x = _extract_input(model, batch).to(device)
             pred = model(x).cpu().numpy()
             true_list.append(batch["gene_expr"].cpu().numpy())
             pred_list.append(pred)
+            coord_list.append(batch["coords"].cpu().numpy())
     y_true_norm = np.concatenate(true_list, axis=0)
     y_pred = np.concatenate(pred_list, axis=0)
+    coords = np.concatenate(coord_list, axis=0)
     y_true_raw = _invert_normalization(y_true_norm, gene_norm, stats)
     y_pred_raw = _invert_normalization(y_pred, gene_norm, stats)
-    return y_true_norm, y_true_raw, y_pred, y_pred_raw
+    return y_true_norm, y_true_raw, y_pred, y_pred_raw, coords
 
 
 def _invert_normalization(
@@ -78,6 +82,86 @@ def _invert_normalization(
     return np.expm1(np.clip(log1p, -30.0, 30.0)).astype(np.float32)
 
 
+def _rank_desc(a: np.ndarray) -> np.ndarray:
+    """每行内按值**降序**的秩（0 = 最大）。输入 (N, G)，输出同形状 int32。"""
+    order = np.argsort(-a, axis=1, kind="stable")
+    r = np.empty_like(order, dtype=np.int32)
+    np.put_along_axis(r, order, np.arange(a.shape[1])[None, :], axis=1)
+    return r
+
+
+def _topk_curve_full(y_true_raw: np.ndarray, y_pred_raw: np.ndarray):
+    """一次性计算全部 k=1..G 的 Top-k 准确率（enter-rank 方法，O(N·G)）。
+
+    对每个细胞，基因 g 同时进入"真值 top-k"与"预测 top-k"当且仅当
+        max(true_rank[g], pred_rank[g]) < k  （rank 从 0 计，k 从 1 计）
+    记 enter[g] = max(两 rank)，则 |S_k ∩ P_k| = #{g : enter[g] ≤ k-1}。
+    对每行 enter 排序后 searchsorted 一次得到所有 k 的重合数，除以 k 即准确率。
+
+    返回 (ks (G,) int, acc (G,) float64)：acc[j] = Top-(j+1) 准确率。
+    """
+    tr = _rank_desc(y_true_raw)
+    pr = _rank_desc(y_pred_raw)
+    enter = np.maximum(tr, pr)
+    es = np.sort(enter, axis=1).astype(np.int64)    # (N, G) 每行升序
+    N, G = es.shape
+    # 把每行加上互不重叠的大偏移 → 展平后全局有序，可用一次 searchsorted 算所有行的插入点
+    row_off = (np.arange(N, dtype=np.int64) * G)[:, None]
+    flat = (es + row_off).ravel()                   # 全局升序
+    queries = (row_off + np.arange(1, G + 1, dtype=np.int64)[None, :]).ravel()
+    p = np.searchsorted(flat, queries, side="left").reshape(N, G)
+    overlap = p - row_off                           # (N,G) |S_{j+1} ∩ P_{j+1}|，j=0..G-1
+    ks = np.arange(1, G + 1)
+    acc = overlap.astype(np.float64) / ks[None, :]  # (N, G)
+    return ks, acc.mean(axis=0)
+
+
+def _ssim_grid_dims(coords: np.ndarray, grid_size: int = 224) -> tuple[int, int]:
+    """按坐标包围盒纵横比决定栅格尺寸（最长边 = grid_size，保证纵横比）。"""
+    w = float(coords[:, 0].max() - coords[:, 0].min())
+    h = float(coords[:, 1].max() - coords[:, 1].min())
+    scale = grid_size / max(w, h, 1e-9)
+    return max(int(round(w * scale)), 2), max(int(round(h * scale)), 2)
+
+
+def _rasterize_bins(coords: np.ndarray, gw: int, gh: int) -> np.ndarray:
+    """细胞坐标 → 栅格 bin 编号（(N,) int64），同一栅格内多细胞取均值聚合。"""
+    x, y = coords[:, 0], coords[:, 1]
+    bx = np.floor((x - x.min()) / max(x.max() - x.min(), 1e-9) * (gw - 1))
+    by = np.floor((y - y.min()) / max(y.max() - y.min(), 1e-9) * (gh - 1))
+    bx = np.clip(bx, 0, gw - 1).astype(np.int64)
+    by = np.clip(by, 0, gh - 1).astype(np.int64)
+    return by * gw + bx
+
+
+def _spatial_ssim(
+    y_true_norm: np.ndarray,
+    y_pred: np.ndarray,
+    coords: np.ndarray,
+    grid_size: int = 224,
+) -> np.ndarray:
+    """逐基因空间表达图 SSIM（均值聚合到栅格 → ssim_2d），返回 (G,) 数组。
+
+    空间语义：把每个基因的跨细胞表达值按坐标栅格化成空间图（空栅格补 0），
+    用 SSIM 衡量预测图与真实图的结构相似度——捕捉 PCC 无法反映的**空间结构**一致性。
+    输入在归一化空间（与 PCC 一致）；栅格纵横比保持、最长边 = grid_size。
+    """
+    from ..eval.metrics import ssim_2d
+
+    N, G = y_true_norm.shape
+    gw, gh = _ssim_grid_dims(coords, grid_size)
+    bins = _rasterize_bins(coords, gw, gh)
+    cnt = np.bincount(bins, minlength=gw * gh).astype(np.float64)
+    cnt[cnt == 0] = 1.0
+    ssims = np.full(G, np.nan, dtype=np.float64)
+    for g in range(G):
+        st = (np.bincount(bins, weights=y_true_norm[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
+        sp = (np.bincount(bins, weights=y_pred[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
+        dr = float(max(st.max(), sp.max()) - min(st.min(), sp.min()))
+        ssims[g] = ssim_2d(st, sp, data_range=dr)
+    return ssims
+
+
 def compute_metrics_vectorized(
     y_true_norm: np.ndarray,
     y_pred: np.ndarray,
@@ -86,6 +170,8 @@ def compute_metrics_vectorized(
     topk_ks: tuple | None = None,
     auroc_threshold: float = 0.0,
     details: bool = False,
+    coords: np.ndarray | None = None,
+    ssim_grid: int = 224,
 ) -> dict:
     """与逐基因/逐细胞循环完全等价的向量化指标计算（大切片评估大幅加速）。
 
@@ -104,8 +190,9 @@ def compute_metrics_vectorized(
     """
     from scipy.stats import rankdata
 
+    topk_ks_default = tuple(range(10, 101, 10))  # 10,20,...,100（README 展示用 k）
     if topk_ks is None:
-        topk_ks = tuple(range(10, 101, 10))  # 10,20,...,100
+        topk_ks = topk_ks_default
 
     N, G = y_true_norm.shape
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -142,18 +229,33 @@ def compute_metrics_vectorized(
 
         # Top-k 逐细胞（k≥G 时全集重合，acc=1.0，与原 topk_accuracy 语义一致）
         topk = {}
-        for k in topk_ks:
-            kk = min(int(k), G)
-            if kk >= G:
-                topk[f"top{k}"] = 1.0
-                continue
-            ti = np.argpartition(-y_true_raw, kk, axis=1)[:, :kk]
-            pi = np.argpartition(-y_pred_raw, kk, axis=1)[:, :kk]
-            th = np.zeros((N, G), dtype=bool)
-            th[np.arange(N)[:, None], ti] = True
-            ph = np.zeros((N, G), dtype=bool)
-            ph[np.arange(N)[:, None], pi] = True
-            topk[f"top{k}"] = float(((th & ph).sum(1) / kk).mean())
+        if topk_ks == "full":
+            # 全 k=1..G 曲线（enter-rank 一次算完），存 _topk_ks/_topk_acc 供 CSV
+            ks, acc = _topk_curve_full(y_true_raw, y_pred_raw)
+            for k in topk_ks_default:
+                topk[f"top{k}"] = float(acc[k - 1]) if k <= G else 1.0
+            result_extra = {"_topk_ks": ks, "_topk_acc": acc}
+        else:
+            result_extra = {}
+            for k in topk_ks:
+                kk = min(int(k), G)
+                if kk >= G:
+                    topk[f"top{k}"] = 1.0
+                    continue
+                ti = np.argpartition(-y_true_raw, kk, axis=1)[:, :kk]
+                pi = np.argpartition(-y_pred_raw, kk, axis=1)[:, :kk]
+                th = np.zeros((N, G), dtype=bool)
+                th[np.arange(N)[:, None], ti] = True
+                ph = np.zeros((N, G), dtype=bool)
+                ph[np.arange(N)[:, None], pi] = True
+                topk[f"top{k}"] = float(((th & ph).sum(1) / kk).mean())
+
+    # SSIM：空间表达图逐基因结构相似度（需要坐标；无坐标则跳过）
+    if coords is not None:
+        ssims = _spatial_ssim(y_true_norm, y_pred, coords, ssim_grid)
+        result_extra["SSIM"] = float(np.nanmean(ssims))
+        if details:
+            result_extra["gene_ssims"] = ssims
 
     result = {
         "PCC": float(np.nanmean(pccs)),
@@ -161,6 +263,7 @@ def compute_metrics_vectorized(
         "cell_PCC": float(np.nanmean(cell_pccs)),
         **topk,
         "AUROC": float(np.nanmean(aurocs)),
+        **result_extra,
     }
     if details:
         result["gene_pccs"] = pccs
@@ -178,18 +281,21 @@ def evaluate(
     topk_ks: tuple | None = None,
     auroc_threshold: float = 0.0,
     details: bool = False,
+    ssim: bool = False,
 ) -> dict:
     """完整评估，返回全部指标（课题要求 9）。
 
     stats 为表达归一化统计量（测试集使用训练集统计量时，与训练一致）。
-    details=True 时额外返回逐基因数组 gene_pccs/gene_spccs/gene_aurocs（供 CSV 导出）。
+    details=True 时额外返回逐基因数组 gene_pccs/gene_spccs/gene_aurocs/gene_ssims。
+    ssim=True 时计算空间表达图 SSIM（需要数据集提供 coords；训练期验证默认关闭以省时）。
+    topk_ks="full" 时计算全部 k=1..G 的 Top-k 曲线（_topk_ks/_topk_acc 供 CSV）。
     """
-    y_true_norm, y_true_raw, y_pred, y_pred_raw = predict(
+    y_true_norm, y_true_raw, y_pred, y_pred_raw, coords = predict(
         model, dataloader, device, gene_norm, stats
     )
     return compute_metrics_vectorized(
         y_true_norm, y_pred, y_true_raw, y_pred_raw, topk_ks, auroc_threshold,
-        details=details,
+        details=details, coords=coords if ssim else None,
     )
 
 
@@ -224,7 +330,7 @@ def save_eval_results_csv(
 
     if topk_ks is None:
         topk_ks = tuple(range(10, 101, 10))
-    summary_keys = ["PCC", "SPCC", "cell_PCC", "AUROC"]
+    summary_keys = ["PCC", "SPCC", "cell_PCC", "SSIM", "AUROC"]
     summary_keys += [f"top{k}" for k in topk_ks]
 
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
@@ -235,19 +341,34 @@ def save_eval_results_csv(
             if k in results:
                 w.writerow([k, float(results[k])])
 
+    # 全 k=1..G Top-k 曲线（k, accuracy 两列，供画连续曲线）
+    curve_path = None
+    if "_topk_ks" in results and "_topk_acc" in results:
+        curve_path = os.path.join(os.path.dirname(csv_path) or ".", "topk_curve.csv")
+        with open(curve_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["k", "accuracy"])
+            for k, a in zip(results["_topk_ks"], results["_topk_acc"]):
+                w.writerow([int(k), float(a)])
+
     gene_path = f"{csv_path}_genes.csv"
     if gene_names is not None and "gene_pccs" in results:
+        has_ssim = "gene_ssims" in results
         with open(gene_path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["gene", "PCC", "SPCC", "AUROC"])
+            w.writerow(["gene", "PCC", "SPCC", "AUROC", "SSIM"])
             for i, g in enumerate(gene_names):
                 w.writerow([
                     g,
                     float(results["gene_pccs"][i]),
                     float(results["gene_spccs"][i]),
                     float(results["gene_aurocs"][i]),
+                    float(results["gene_ssims"][i]) if has_ssim else "",
                 ])
-    return {"summary": csv_path, "genes": gene_path}
+    out = {"summary": csv_path, "genes": gene_path}
+    if curve_path:
+        out["topk_curve"] = curve_path
+    return out
 
 
 def fit(
