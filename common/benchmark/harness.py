@@ -135,8 +135,8 @@ def _rasterize_bins(coords: np.ndarray, gw: int, gh: int) -> np.ndarray:
 
 
 def _spatial_ssim(
-    y_true_norm: np.ndarray,
-    y_pred: np.ndarray,
+    y_true_img: np.ndarray,
+    y_pred_img: np.ndarray,
     coords: np.ndarray,
     grid_size: int = 224,
 ) -> np.ndarray:
@@ -144,19 +144,20 @@ def _spatial_ssim(
 
     空间语义：把每个基因的跨细胞表达值按坐标栅格化成空间图（空栅格补 0），
     用 SSIM 衡量预测图与真实图的结构相似度——捕捉 PCC 无法反映的**空间结构**一致性。
-    输入在归一化空间（与 PCC 一致）；栅格纵横比保持、最长边 = grid_size。
+    **输入统一为 log1p(raw counts) 公共空间**（跨方法可比，避免 zscore 虚高）；
+    栅格纵横比保持、最长边 = grid_size。
     """
     from ..eval.metrics import ssim_2d
 
-    N, G = y_true_norm.shape
+    N, G = y_true_img.shape
     gw, gh = _ssim_grid_dims(coords, grid_size)
     bins = _rasterize_bins(coords, gw, gh)
     cnt = np.bincount(bins, minlength=gw * gh).astype(np.float64)
     cnt[cnt == 0] = 1.0
     ssims = np.full(G, np.nan, dtype=np.float64)
     for g in range(G):
-        st = (np.bincount(bins, weights=y_true_norm[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
-        sp = (np.bincount(bins, weights=y_pred[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
+        st = (np.bincount(bins, weights=y_true_img[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
+        sp = (np.bincount(bins, weights=y_pred_img[:, g], minlength=gw * gh) / cnt).reshape(gh, gw)
         dr = float(max(st.max(), sp.max()) - min(st.min(), sp.min()))
         ssims[g] = ssim_2d(st, sp, data_range=dr)
     return ssims
@@ -250,9 +251,14 @@ def compute_metrics_vectorized(
                 ph[np.arange(N)[:, None], pi] = True
                 topk[f"top{k}"] = float(((th & ph).sum(1) / kk).mean())
 
-    # SSIM：空间表达图逐基因结构相似度（需要坐标；无坐标则跳过）
+    # SSIM：空间表达图逐基因结构相似度（需要坐标；无坐标则跳过）。
+    # **统一在 log1p(counts) 公共空间计算**（所有方法一致），保证跨方法可比——
+    # zscore 空间会归一化掉幅度/偏移偏差导致 SSIM 虚高（实测弱预测 0.3× 幅度时
+    # zscore=1.0 vs log1p=0.43）。PCC/SPCC/Top-k/AUROC 对单调/仿射不变，不受此影响。
     if coords is not None:
-        ssims = _spatial_ssim(y_true_norm, y_pred, coords, ssim_grid)
+        ssim_true = np.log1p(np.clip(y_true_raw, 0, None))
+        ssim_pred = np.log1p(np.clip(y_pred_raw, 0, None))
+        ssims = _spatial_ssim(ssim_true, ssim_pred, coords, ssim_grid)
         result_extra["SSIM"] = float(np.nanmean(ssims))
         if details:
             result_extra["gene_ssims"] = ssims
