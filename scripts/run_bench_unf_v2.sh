@@ -1,15 +1,16 @@
 #!/bin/bash
 # rep1→rep2 benchmark 续段（v2，用户 2026-08-29 要求：耗时短先跑）。
-# 由 watcher_reorder.sh 在 st_net 完成后启动（st_net 已由主脚本 run_bench_unf.sh 跑完）。
+# 由 watcher_reorder.sh 在 st_net 训练完成后启动。
 # 顺序：
-#   ① 重跑已完成的 5 方法测试（uni2_mlp/pixel2gene/path2space/deeppt/spatialex）
+#   ① st_net 测试（多 worker 并行读图加速，patch 方法，~40 min）
+#   ② 重跑已完成的 5 方法测试（uni2_mlp/pixel2gene/path2space/deeppt/spatialex）
 #      刷新 SSIM → 统一 log1p(counts) 空间（快，~5-10 min）
-#   ② stflow 训练+测试（快，~30 min）
-#   ③ hist2st 训练+测试（慢，patch 方法）
-#   ④ bleep 冻结训练+测试（慢，patch 方法）
-#   ⑤ LG 完整调参（op1 sweep → op2 sweep → 最终 50ep）——最后
-#   ⑥ GHIST 训练+测试（OOM 恢复，失败重试）
-# 用法：nohup bash scripts/run_bench_unf_v2.sh > logs/bench_unf_v2.log 2>&1 &
+#   ③ stflow 训练+测试（快，~30 min）
+#   ④ hist2st 训练+测试（慢，patch 方法）
+#   ⑤ bleep 冻结训练+测试（慢，patch 方法）
+#   ⑥ LG 完整调参（op1 sweep → op2 sweep → 最终 50ep）——最后
+#   ⑦ GHIST 训练+测试（OOM 恢复，失败重试）
+# 用法：ulimit -n 65535 && nohup bash scripts/run_bench_unf_v2.sh > logs/bench_unf_v2.log 2>&1 &
 set -u
 cd "$(dirname "$0")/.."
 mkdir -p outputs logs
@@ -23,9 +24,17 @@ DEV="cuda"
 LOG=logs/bench_unf_v2.log
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 
-say "==== rep1→rep2 v2 续段开始（st_net 已完，重排：短方法先跑）===="
+say "==== rep1→rep2 v2 续段开始（重排：短方法先跑）===="
 
-# ---------- ① 重跑已完成的 5 方法测试（SSIM→log1p 空间） ----------
+# ---------- ① st_net 测试（多 worker 并行读图） ----------
+m=st_net; D=outputs/bench_${m}_unf
+if [ ! -f "$D/test_results.json" ] || [ ! -f "$D/gene_pcc.csv" ]; then
+  say "== $m test（多 worker）=="
+  python3 scripts/test.py --method $m --ckpt "$D/best.pt" --test_dir data/rep2 \
+    --gene_norm $GN --output_dir "$D" --device cuda --workers 8 >> logs/bench_${m}_unf_train.log 2>&1
+fi
+
+# ---------- ② 重跑已完成的 5 方法测试（SSIM→log1p 空间） ----------
 retest() { # $1=方法名  $2..=额外参数
   local m=$1; shift
   local D=outputs/bench_${m}_unf

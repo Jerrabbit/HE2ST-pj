@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
                    help="Phoenix 专属：流 transformer 层数（默认 8）")
     p.add_argument("--output_dir", default="outputs")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--workers", type=int, default=8,
+                   help="DataLoader worker 数（patch 类方法并行读图加速，默认 8；特征类无影响）")
     return p.parse_args()
 
 
@@ -102,9 +104,13 @@ def main() -> None:
                          ref_stats=ref_stats, img_size=args.img_size)
 
     from torch.utils.data import DataLoader
-    # 测试是单趟评估，num_workers=0 避免多进程 IPC 在受限 shell 下触发
-    # "Too many open files"（远程 nohup/ssh 环境文件描述符上限可能较低）
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    import torch.multiprocessing as mp
+    # patch 类方法单趟评估慢在读图：用多 worker 并行 IO + file_system 共享策略
+    # 避免大特征 mmap 跨进程共享触发 "Too many open files"（远程 shell FD 上限）。
+    # 启动时建议 ulimit -n 65535。
+    mp.set_sharing_strategy("file_system")
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
+                        num_workers=args.workers)
 
     stats = ref_stats or ds.stats
     results = evaluate(model, loader, args.device, args.gene_norm, stats,
