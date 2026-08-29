@@ -29,7 +29,7 @@ def main() -> None:
     import torch
 
     import methods.ghist as ghist
-    from common.benchmark.harness import save_eval_results_csv
+    from common.benchmark.harness import save_eval_results_csv, scalar_results
 
     args = parse_args()
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
@@ -54,9 +54,7 @@ def main() -> None:
     results = ghist.evaluate_slide(model, args.test_dir, gene_norm, stats,
                                    args.device, args.output_dir,
                                    ref_expr=ref_expr, details=True)
-    print(json.dumps({k: v for k, v in results.items()
-                      if not k.startswith("_") and not isinstance(v, list)},
-                     ensure_ascii=False, indent=2))
+    print(json.dumps(scalar_results(results), ensure_ascii=False, indent=2))
     csv_files = save_eval_results_csv(
         os.path.join(args.output_dir, "eval_metrics.csv"),
         results, gene_names=results.get("_gene_names"))

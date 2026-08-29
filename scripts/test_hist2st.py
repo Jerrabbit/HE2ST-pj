@@ -63,13 +63,11 @@ def main() -> None:
     print(f"[Hist2ST] 加载 best.pt: num_genes={num_genes} fig_size={fig_size} "
           f"gene_norm={gene_norm}", flush=True)
 
-    from common.benchmark.harness import save_eval_results_csv
+    from common.benchmark.harness import save_eval_results_csv, scalar_results
 
     results = hist2st.evaluate_slide(model, args.test_dir, gene_norm, stats,
                                      args.device, args.output_dir, details=True)
-    print(json.dumps({k: v for k, v in results.items()
-                      if not k.startswith("_") and not isinstance(v, list)},
-                     ensure_ascii=False, indent=2))
+    print(json.dumps(scalar_results(results), ensure_ascii=False, indent=2))
     csv_files = save_eval_results_csv(
         os.path.join(args.output_dir, "eval_metrics.csv"),
         results, gene_names=results.get("_gene_names"))
