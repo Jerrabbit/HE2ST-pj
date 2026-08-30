@@ -41,7 +41,7 @@ resnet50/DenseNet 等）一律冻结（通常以预提取特征参与），接�
 | **UNI2+MLP** | 基础模型（patch） | 每细胞 256×256 patch → UNI2 特征 | UNI2 | 统一 MLP 头 | UNI2（ViT-L/14） |
 | **DeepPT** | slide（bulk 表达） | 每细胞 patch → ResNet50 2048-d | ResNet50 | AE(2048→512) + 官方 `MLP_regression` | ResNet50-ImageNet |
 | **Pixel2Gene** | spot（Visium） | 每细胞 patch → HIPT level-1 CLS(384-d) | HIPT | 官方 `ForwardSumModel` 头 | HIPT-4K（DINO） |
-| **SpatialEx** | spot（Visium 超图） | 每细胞为超图节点，kNN(k=7) 自环 | UNI2 | HGNN 超图卷积头 | UNI2 |
+| **SpatialEx** | cell（单细胞超图） | 本身 cell 级：整片超图逐细胞预测（每细胞为节点，kNN(k=7) 自环）；伪 spot 聚合为可选 | UNI2 | HGNN 超图卷积头 | UNI2 |
 | **ST-Net** | spot（Visium） | 每细胞 patch → DenseNet121 | DenseNet | 线性回归头（官方 bias 初始化） | DenseNet121-ImageNet |
 | **BLEEP** | spot（Visium 对比） | 每细胞 patch → resnet50 | resnet50 | 对比投影头 + 参考集检索 | resnet50-ImageNet |
 | **SQUALL** | spot（224 patch 多模态） | 每细胞 patch = 独立 spot | SQUALL 编码器（555M） | 统一 MLP / 官方 `TransformerDecoder` 头 | `SQUALL_full.pth` |
@@ -724,7 +724,7 @@ mean-pool）。
 | **UNI2+MLP Local+Global**（改进） | 特征回归 | UNI2 冻结 | concat[Global CLS, Local 中心 token]→统一 MLPHead 3072→512→256→313 | 本仓库创新（token 复用单次 forward） | **0.3712** | 核心创新（见上节），+0.047 |
 | **DeepPT** | 特征回归 | ResNet50-ImageNet | AE(2048→512)+官方 `MLP_regression`（Linear→Dropout→Linear） | ✅ 官方特征 + 官方头忠实版 | 0.2628 | 合理（官方忠实版；UNI2 特征版 0.3206 作参考，见专节） |
 | **Pixel2Gene** | 特征回归 | HIPT 冻结 | 官方 `ForwardSumModel`（576→256×4 FFN+ELU 输出头） | ✅ 官方头；cell 级为方案 B | 0.2913 / 0.169 | cell 级合理（log1p 空间），spot 级受异质性封顶 |
-| **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level MSE 为可选适配 | 0.2964 | 合理，超官方(UNI1)0.256 |
+| **SpatialEx** | 超图 GNN | UNI2 冻结 | MLP→HGNN→Linear，超图 kNN k=7 | ✅ 官方架构；cell-level 为原生模式（伪 spot 聚合可选） | 0.2964 | 合理，超官方(UNI1)0.256 |
 | **ST-Net** | CNN 回归 | DenseNet **冻结**（`--no_finetune`） | Linear 回归头 | ✅ 官方 DenseNet 架构；冻结为项目原则 | 0.2386 | 合理（冻结）；微调 0.3619 仅参考 |
 | **BLEEP** | 对比学习 | resnet50 **冻结** | 对比投影头 | ✅ 官方架构；冻结为项目原则 | 0.2131 | 合理（冻结）；微调 0.3235 仅参考 |
 | **SQUALL** | Transformer 多模态 | 冻结 555M 特征 | 官方 `SQUALLDecoderHead`（TransformerDecoder→313，训练） | ✅ 架构逐字节一致，`SQUALL_full.pth` 严格加载 | 0.3281 | 解码器头可训练时最强（vs 统一 MLP 0.2812）；0-1 输入修复后；解码器头为从头训练（非官方 decoder 权重） |
@@ -764,7 +764,7 @@ mean-pool）。
 | **UNI2+MLP Local+Global** | 同上 | 同上 + 中心 token 局部特征 | 冻结 UNI2 + 训练 MLP（单次 forward） | UNI2 |
 | **DeepPT** | **slide 级**（整片 bulk 表达） | 每细胞 patch → ResNet50 特征（per-cell） | 冻结 ResNet50(ImageNet) + AE 预训练 + 训练官方 MLP 头 | ResNet50-ImageNet |
 | **Pixel2Gene** | **spot 级**（Visium） | 每细胞 patch → HIPT 层级特征 | 冻结 HIPT + **训练官方 ForwardSum 头** | HIPT-4K（DINO） |
-| **SpatialEx** | **spot 级**（Visium 超图） | 每细胞为超图节点，kNN(k=7) 自环 | UNI2 冻结 + 训练超图卷积头（HGNN） | UNI2 |
+| **SpatialEx** | **cell 级**（Xenium 单细胞超图） | 本身 cell 级（整片超图，每细胞为节点 kNN(k=7) 自环；Generate_pseudo_spot 伪 spot 聚合为可选） | UNI2 冻结 + 训练超图卷积头（HGNN） | UNI2 |
 | **ST-Net** | **spot 级**（Visium CNN+图） | 每细胞 patch → DenseNet121 | 冻结 DenseNet + 训练线性头（官方 bias 均值初始化） | DenseNet121-ImageNet |
 | **BLEEP** | **spot 级**（Visium 对比） | 每细胞 patch → resnet50 | 冻结 resnet50 + 训练对比投影头 + 参考集检索 | resnet50-ImageNet |
 | **SQUALL** | **spot 级**（224 patch 多模态） | 每细胞 patch = 独立 spot | 冻结 SQUALL 编码器 + 训练 MLP / TransformerDecoder 头 | SQUALL（555M 冻结） |
@@ -791,10 +791,12 @@ patch → ResNet50 2048-d 特征 → AE(2048→512) 重构预训练 → 训练�
 适配（方案 B）：每细胞 patch → HIPT level-1 ViT-256 CLS（384-d）→ **训练官方 ForwardSum
 头**（n_inp 适配 384）。HIPT 冻结（DINO 预训练）。
 
-**4. SpatialEx（spot 级 → cell）**
-官方是 Visium spot 上的**超图卷积**。适配：每细胞为超图节点，用 kNN(k=7)+自环建超图
-（复用 `common/data/slide_tiling.py`，与官方 `Build_hypergraph_spatial_and_HE` 语义一致），
-ROI 内子图 hpnn 归一化。**UNI2 特征冻结**，训练 HGNN 超图卷积头。
+**4. SpatialEx（cell 级）**
+官方是**单细胞（Xenium）超图卷积**（架构类 `Predictor_spot` 命名虽带 "spot"，但核心是整片
+超图逐细胞预测表达，官方代码含 `Xenium_HBRC_overlap` 单细胞 ROI 路径；`Generate_pseudo_spot`
+伪 spot 聚合为可选的 Visium 模式）。本仓库即 cell 级：每细胞为超图节点，kNN(k=7)+自环建
+超图（复用 `common/data/slide_tiling.py`，与官方 `Build_hypergraph_spatial_and_HE` 语义
+一致），ROI 内子图 hpnn 归一化。**UNI2 特征冻结**，训练 HGNN 超图卷积头。
 
 **5. ST-Net（spot 级 → cell）**
 官方 ST-Net 是 Visium spot 上的 CNN+GNN。适配：每细胞 patch → DenseNet121 → 线性输出
@@ -842,7 +844,7 @@ lr1e-5；统一协议下不收敛，官方配置才有学习）。
 
 - **适配规律**：绝大多数方法是 **spot 级 → per-cell**，统一做法是"每细胞 patch = 一个
   spot/节点"，再套用原架构（图/超图/检索/流匹配）。SQUALL 是最直接的（patch 即 spot）；
-  DeepPT 从 slide 级降粒度；Phoenix 与 GHIST 本身 cell 级。
+  DeepPT 从 slide 级降粒度；Phoenix、GHIST 与 SpatialEx 本身 cell 级。
 - **实现方式分层**：① 冻结基础模型特征 + 训练头（UNI2/DeepPT/Pixel2Gene/SpatialEx/
   ST-Net/BLEEP/SQUALL/STFlow/Path2Space，0.21-0.37）；② 官方预训练权重零样本/微调
   （Phoenix）；③ 从头训练（GHIST/Hist2ST）。
