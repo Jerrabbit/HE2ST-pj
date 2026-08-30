@@ -46,6 +46,7 @@ METHODS = [
     ("Path2Space", "bench_path2space_unf", YELLOW),
     ("DeepPT", "bench_deeppt_resnet50_unf", MAGENTA),
     ("ST-Net", "bench_st_net_unf", GREEN),
+    ("Phoenix", "bench_phoenix_finetune", INK),
 ]
 # PCC 柱状图：黄、绿、蓝为主，很浅的柱色 + 稍深的散点色
 BAR_COLORS = {
@@ -55,6 +56,7 @@ BAR_COLORS = {
     "Path2Space": "#f6d689",   # 极浅暗黄
     "DeepPT": "#b9e4bc",       # 极浅绿
     "ST-Net": "#8fb7e6",       # 浅蓝
+    "Phoenix": "#d8c9f0",      # 极浅紫
 }
 SCATTER_COLORS = {
     "UNI2+MLP": "#2a78d6",     # 深蓝
@@ -63,33 +65,44 @@ SCATTER_COLORS = {
     "Path2Space": "#b98200",   # 深暗黄
     "DeepPT": "#2f8f5a",       # 深绿
     "ST-Net": "#2a5f9e",       # 深蓝
+    "Phoenix": "#6a4fb0",      # 深紫
 }
 OUT_ROOT = "outputs"
 
 
 def load_method(dirname):
     base = os.path.join(OUT_ROOT, dirname)
-    # 逐基因 PCC：mean / std（误差棒）
+    # 逐基因 PCC：新格式 gene_pcc.csv 或旧格式 eval_metrics.csv_genes.csv
     pccs = []
-    with open(os.path.join(base, "eval_metrics.csv_gene_pcc.csv")) as f:
+    gp = os.path.join(base, "eval_metrics.csv_gene_pcc.csv")
+    if not os.path.exists(gp):
+        gp = os.path.join(base, "eval_metrics.csv_genes.csv")
+    with open(gp) as f:
         r = csv.reader(f)
-        next(r)  # header
+        header = next(r)
+        pcc_col = 1 if len(header) < 2 or header[1] == "PCC" else 1
         for row in r:
-            if row and row[1] not in ("", "nan"):
-                pccs.append(float(row[1]))
+            if len(row) > pcc_col and row[pcc_col] not in ("", "nan"):
+                pccs.append(float(row[pcc_col]))
     pccs = np.array(pccs)
-    # Top-k 曲线
-    ks, acc = [], []
-    with open(os.path.join(base, "topk_curve.csv")) as f:
-        r = csv.reader(f)
-        next(r)
-        for row in r:
-            if row:
-                ks.append(int(row[0])); acc.append(float(row[1]))
-    ks = np.array(ks); acc = np.array(acc)
-    # test_results.json 汇总（PCC 标量，跨检查用）
-    with open(os.path.join(base, "test_results.json")) as f:
-        res = json.load(f)
+    # Top-k 曲线（缺失则返回 None，柱状图仍可用）
+    ks, acc = None, None
+    tk = os.path.join(base, "topk_curve.csv")
+    if os.path.exists(tk):
+        kk, aa = [], []
+        with open(tk) as f:
+            r = csv.reader(f)
+            next(r)
+            for row in r:
+                if row:
+                    kk.append(int(row[0])); aa.append(float(row[1]))
+        ks, acc = np.array(kk), np.array(aa)
+    # test_results.json 汇总（可选）
+    res = None
+    tj = os.path.join(base, "test_results.json")
+    if os.path.exists(tj):
+        with open(tj) as f:
+            res = json.load(f)
     return {"name": None, "pccs": pccs, "ks": ks, "acc": acc, "res": res}
 
 
@@ -141,6 +154,8 @@ for n, m, s in zip(names_s, means_s, stds_s):
 fig, ax = plt.subplots(figsize=(9.5, 5.2))
 for name, _, color in METHODS:
     d = data[name]
+    if d["ks"] is None:
+        continue                            # 无完整 Top-k 曲线（如 Phoenix 旧跑仅存 top10-100）
     m = d["ks"] >= 10                      # 曲线从 k=10 开始
     ax.plot(d["ks"][m], d["acc"][m], color=color, lw=2, label=name)
 ax.set_xlabel("k（Top-k 前 k 个基因）")
