@@ -112,5 +112,36 @@ def make_charts(methods, suffix):
             print(f"  {n:14s} {metric}={v:.4f}")
 
 
+def make_cellpcc_chart():
+    """cell-PCC：逐细胞指标，只有均值（无逐细胞数组）→ 普通柱状图，只画新跑方法。"""
+    items = []
+    for name, d in METHOD_DIRS.items():
+        p = os.path.join("outputs", d, "test_results.json")
+        if os.path.exists(p):
+            r = json.load(open(p))
+            items.append((name, r["cell_PCC"]))
+    items.sort(key=lambda t: -t[1])
+    names = [t[0] for t in items]
+    vals = [t[1] for t in items]
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+    x = np.arange(len(names))
+    for xi, (n, v) in enumerate(zip(names, vals)):
+        ax.bar(xi, v, color=METHOD_COLORS[n], width=0.62, zorder=3)
+        ax.text(xi, v + 0.004, f"{v:.4f}", ha="center", va="bottom", fontsize=9, color=INK)
+    ax.set_xticks(x)
+    ax.set_xticklabels(names, fontsize=10, rotation=30, ha="right")
+    ax.set_ylabel("cell_PCC")
+    ax.set_ylim(0, max(vals) * 1.16)
+    ax.grid(axis="x", visible=False)
+    fname = "benchmark_cellpcc_bar_new.png"
+    fig.tight_layout()
+    fig.savefig(fname, dpi=150)
+    plt.close(fig)
+    print(f"已生成 {fname}（{len(names)} 方法）")
+    for n, v in items:
+        print(f"  {n:12s} cell_PCC={v:.4f}")
+
+
 make_charts(METHODS12, "all12")                       # 12 方法，无 LG
 make_charts(METHODS12 + ["Local+Global"], "all13")    # 13 方法，含 LG
+make_cellpcc_chart()                                  # cell-PCC（新跑 7 方法）
