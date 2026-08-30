@@ -21,7 +21,7 @@
 | **Phoenix** | 流匹配生成（DINOv2 编码器 + 流 transformer） | *Pan-cancer virtual spatial transcriptomics from routine histology with Phoenix*, **bioRxiv 2026** |
 | **Path2Space** | MLP 集成（CTransPath 特征 + MLP 回归头） | Shulman et al., *Path2Space: An AI Approach for Cancer Biomarker Discovery Via Histopathology Inferred Spatial Transcriptomics*, **Cell 2026**（bioRxiv 2024） |
 | **SpatialEx** | 超图卷积（UNI 特征 + HGNN） | Liu et al., *High-Parameter Spatial Multi-Omics through Histology-Anchored Integration*, **Nature Methods 2025** |
-| **Pixel2Gene** | HIPT 层级特征 + ForwardSum 头 | *Pixel2Gene enables histology-guided reconstruction and prediction of spatial gene expression*, **bioRxiv 2026**（HIPT：Chen et al., **ICLR 2022**） |
+| **Pixel2Gene** | superpixel 多尺度 H&E 特征 + ForwardSum 头（本仓库用 HIPT 层级特征） | *Pixel2Gene enables histology-guided reconstruction and prediction of spatial gene expression*, **bioRxiv 2026**（HIPT：Chen et al., **ICLR 2022**） |
 | **GHIST** | UNet3+ 核分割 + 多任务图模型（**cell 级**） | Fu et al., *Spatial gene expression at single-cell resolution from histology using deep learning with GHIST*, **Nature Methods 2025** |
 | **ST-Net** | 预训练 CNN（DenseNet121）特征回归 | He et al., *Integrating spatial gene expression and breast tumour morphology via deep learning*, **Nature Biomedical Engineering 2020** |
 | **Hist2ST** | Convmixer + Transformer + GNN（ZINB 输出） | Zeng et al., *Spatial transcriptomics prediction from histology jointly through Transformer and graph neural networks*, **Briefings in Bioinformatics 2022** |
@@ -40,7 +40,7 @@ resnet50/DenseNet 等）一律冻结（通常以预提取特征参与），接�
 |---|---|---|---|---|---|
 | **UNI2+MLP** | 基础模型（patch） | 每细胞 256×256 patch → UNI2 特征 | UNI2 | 统一 MLP 头 | UNI2（ViT-L/14） |
 | **DeepPT** | slide（bulk 表达） | 每细胞 patch → ResNet50 2048-d | ResNet50 | AE(2048→512) + 官方 `MLP_regression` | ResNet50-ImageNet |
-| **Pixel2Gene** | spot（Visium） | 每细胞 patch → HIPT level-1 CLS(384-d) | HIPT | 官方 `ForwardSumModel` 头 | HIPT-4K（DINO） |
+| **Pixel2Gene** | superpixel / 高分辨率 bin（~8 μm） | 每细胞 patch → HIPT level-1 CLS(384-d) | HIPT | 官方 `ForwardSumModel` 头 | HIPT-4K（DINO） |
 | **SpatialEx** | cell（单细胞超图） | 本身 cell 级：整片超图逐细胞预测（每细胞为节点，kNN(k=7) 自环）；伪 spot 聚合为可选 | UNI2 | HGNN 超图卷积头 | UNI2 |
 | **ST-Net** | spot（Visium） | 每细胞 patch → DenseNet121 | DenseNet | 线性回归头（官方 bias 初始化） | DenseNet121-ImageNet |
 | **BLEEP** | spot（Visium 对比） | 每细胞 patch → resnet50 | resnet50 | 对比投影头 + 参考集检索 | resnet50-ImageNet |
@@ -763,7 +763,7 @@ mean-pool）。
 | **UNI2+MLP**（基线） | 基础模型（patch 级） | 每细胞 256×256 patch → UNI2 特征 | **冻结 UNI2** + 训练 MLP 头 | UNI2（ViT-L/14，HF） |
 | **UNI2+MLP Local+Global** | 同上 | 同上 + 中心 token 局部特征 | 冻结 UNI2 + 训练 MLP（单次 forward） | UNI2 |
 | **DeepPT** | **slide 级**（整片 bulk 表达） | 每细胞 patch → ResNet50 特征（per-cell） | 冻结 ResNet50(ImageNet) + AE 预训练 + 训练官方 MLP 头 | ResNet50-ImageNet |
-| **Pixel2Gene** | **spot 级**（Visium） | 每细胞 patch → HIPT 层级特征 | 冻结 HIPT + **训练官方 ForwardSum 头** | HIPT-4K（DINO） |
+| **Pixel2Gene** | **superpixel / 高分辨率 bin 级**（~8 μm，Visium HD / Xenium / CosMx） | 每细胞 patch → HIPT 层级特征 | 冻结 HIPT + **训练官方 ForwardSum 头** | HIPT-4K（DINO） |
 | **SpatialEx** | **cell 级**（Xenium 单细胞超图） | 本身 cell 级（整片超图，每细胞为节点 kNN(k=7) 自环；Generate_pseudo_spot 伪 spot 聚合为可选） | UNI2 冻结 + 训练超图卷积头（HGNN） | UNI2 |
 | **ST-Net** | **spot 级**（Visium CNN+图） | 每细胞 patch → DenseNet121 | 冻结 DenseNet + 训练线性头（官方 bias 均值初始化） | DenseNet121-ImageNet |
 | **BLEEP** | **spot 级**（Visium 对比） | 每细胞 patch → resnet50 | 冻结 resnet50 + 训练对比投影头 + 参考集检索 | resnet50-ImageNet |
@@ -786,10 +786,12 @@ UNI2 是 patch 级病理基础模型（ViT-L/14）。把每个细胞的 256×256
 patch → ResNet50 2048-d 特征 → AE(2048→512) 重构预训练 → 训练官方 `MLP_regression`
 头。**ResNet50 冻结**（ImageNet 预训练），仅 AE+头训练。
 
-**3. Pixel2Gene（spot 级 → cell）**
-官方在 **伪 Visium spot**（100µm 六角格）上用 HIPT-4K 提取 576-d 特征 + ForwardSum 头。
-适配（方案 B）：每细胞 patch → HIPT level-1 ViT-256 CLS（384-d）→ **训练官方 ForwardSum
-头**（n_inp 适配 384）。HIPT 冻结（DINO 预训练）。
+**3. Pixel2Gene（superpixel / 高分辨率 bin 级 → cell）**
+官方在 **~8 μm superpixel**（16×16 px H&E superpixel 与表达配对；或 Visium HD 8μm bin、
+Xenium/CosMx 按转录本坐标聚合）上用**多尺度 H&E 特征 + 前馈网络（ForwardSum 头）**预测
+表达——分辨率远细于经典 Visium 55μm spot，接近单细胞尺度。适配（方案 B）：每细胞 patch →
+HIPT level-1 ViT-256 CLS（384-d，本仓库以 HIPT 提供层级多尺度特征）→ **训练官方
+ForwardSum 头**（n_inp 适配 384）。HIPT 冻结（DINO 预训练）。
 
 **4. SpatialEx（cell 级）**
 官方是**单细胞（Xenium）超图卷积**（架构类 `Predictor_spot` 命名虽带 "spot"，但核心是整片
@@ -842,9 +844,11 @@ lr1e-5；统一协议下不收敛，官方配置才有学习）。
 
 #### 关键观察
 
-- **适配规律**：绝大多数方法是 **spot 级 → per-cell**，统一做法是"每细胞 patch = 一个
-  spot/节点"，再套用原架构（图/超图/检索/流匹配）。SQUALL 是最直接的（patch 即 spot）；
-  DeepPT 从 slide 级降粒度；Phoenix、GHIST 与 SpatialEx 本身 cell 级。
+- **适配规律**：**spot 级 → per-cell** 的方法占多数（ST-Net/BLEEP/SQUALL/STFlow/Path2Space/
+  Hist2ST），统一做法是"每细胞 patch = 一个 spot/节点"，再套用原架构（图/检索/流匹配）；
+  SQUALL 是最直接的（patch 即 spot）。DeepPT 从 **slide 级**降粒度；Pixel2Gene 从
+  **superpixel（~8 μm 高分辨率 bin）**适配到 cell；**SpatialEx、Phoenix、GHIST 本身
+  cell 级**。
 - **实现方式分层**：① 冻结基础模型特征 + 训练头（UNI2/DeepPT/Pixel2Gene/SpatialEx/
   ST-Net/BLEEP/SQUALL/STFlow/Path2Space，0.21-0.37）；② 官方预训练权重零样本/微调
   （Phoenix）；③ 从头训练（GHIST/Hist2ST）。
