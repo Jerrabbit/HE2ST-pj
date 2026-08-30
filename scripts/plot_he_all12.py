@@ -1,8 +1,10 @@
-"""为全部 12 种方法绘制 PCC / SPCC / AUROC 柱状图（普通柱状图）。
+"""为 12 / 13 种方法绘制 PCC / SPCC / AUROC 柱状图（普通柱状图）。
 
-新跑方法（7 个）读本地 outputs/bench_*_unf/test_results.json；
-未跑方法（5 个）用 README 中"最初未过滤"基准的值。全部同风格实心柱，
-色调沿用之前误差棒 PCC 图的清新浅色（黄、绿、蓝为主）。
+- 13 方法 = 12 种基准方法 + Local+Global（核心创新）。
+- 新跑方法读本地 outputs/bench_*_unf/test_results.json；未跑方法用 README 旧未过滤值。
+- 全实心柱，清新浅色（黄/绿/蓝为主），与误差棒 PCC 图一致。
+输出：benchmark_{metric}_bar_all12.png（12 方法，无 LG）与
+      benchmark_{metric}_bar_all13.png（13 方法，含 LG）。
 """
 import json
 import os
@@ -33,7 +35,7 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False, "font.family": "sans-serif",
 })
 
-# ---- 12 种方法：清新浅色（黄/绿/蓝为主，与误差棒 PCC 图一致） ----
+# ---- 12 种基准方法：清新浅色（黄/绿/蓝为主） ----
 METHOD_COLORS = {
     "UNI2+MLP":   "#a9c7ef",   # 浅蓝
     "Pixel2Gene": "#fbe39a",   # 浅黄
@@ -69,48 +71,46 @@ METHOD_DIRS = {
     "ST-Net":     "bench_st_net_unf",
 }
 
+METHODS12 = ["UNI2+MLP", "SQUALL", "GHIST", "SpatialEx", "Pixel2Gene", "Path2Space",
+             "DeepPT", "STFlow", "ST-Net", "BLEEP", "Hist2ST", "Phoenix"]
+
 
 def get_metrics(name):
-    """返回 (PCC, SPCC, AUROC)。"""
     d = METHOD_DIRS.get(name)
     if d:
         p = os.path.join("outputs", d, "test_results.json")
         if os.path.exists(p):
             r = json.load(open(p))
             return (r["PCC"], r["SPCC"], r["AUROC"])
-    ph = PLACEHOLDER.get(name)
-    return ph if ph else (float("nan"), float("nan"), float("nan"))
+    return PLACEHOLDER.get(name, (float("nan"), float("nan"), float("nan")))
 
 
-METHODS = ["Local+Global", "UNI2+MLP", "SQUALL", "GHIST", "SpatialEx", "Pixel2Gene",
-           "Path2Space", "STFlow", "DeepPT", "ST-Net", "BLEEP", "Hist2ST", "Phoenix"]
-DATA = {n: get_metrics(n) for n in METHODS}
+def make_charts(methods, suffix):
+    data = {n: get_metrics(n) for n in methods}
+    for metric in ("PCC", "SPCC", "AUROC"):
+        idx = {"PCC": 0, "SPCC": 1, "AUROC": 2}[metric]
+        items = sorted([(n, data[n][idx]) for n in methods], key=lambda t: -t[1])
+        names = [t[0] for t in items]
+        vals = [t[1] for t in items]
+        fig, ax = plt.subplots(figsize=(10.5, 4.8))
+        x = np.arange(len(names))
+        for xi, (n, v) in enumerate(zip(names, vals)):
+            ax.bar(xi, v, color=METHOD_COLORS[n], width=0.62, zorder=3)
+            ax.text(xi, v + 0.004, f"{v:.4f}", ha="center", va="bottom",
+                    fontsize=8, color=INK)
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, fontsize=9.5, rotation=40, ha="right")
+        ax.set_ylabel(metric)
+        ax.set_ylim(0, max(vals) * 1.16)
+        ax.grid(axis="x", visible=False)
+        fname = f"benchmark_{metric.lower()}_bar_{suffix}.png"
+        fig.tight_layout()
+        fig.savefig(fname, dpi=150)
+        plt.close(fig)
+        print(f"已生成 {fname}（{len(names)} 方法）")
+        for n, v in items:
+            print(f"  {n:14s} {metric}={v:.4f}")
 
-CHART_CFG = [
-    ("PCC", "benchmark_pcc_bar_all12.png"),
-    ("SPCC", "benchmark_spcc_bar_all12.png"),
-    ("AUROC", "benchmark_auroc_bar_all12.png"),
-]
 
-for metric, fname in CHART_CFG:
-    idx = {"PCC": 0, "SPCC": 1, "AUROC": 2}[metric]
-    items = sorted([(n, DATA[n][idx]) for n in METHODS], key=lambda t: -t[1])
-    names = [t[0] for t in items]
-    vals = [t[1] for t in items]
-
-    fig, ax = plt.subplots(figsize=(10.5, 4.8))
-    x = np.arange(len(names))
-    for xi, (n, v) in enumerate(zip(names, vals)):
-        ax.bar(xi, v, color=METHOD_COLORS[n], width=0.62, zorder=3)
-        ax.text(xi, v + 0.004, f"{v:.4f}", ha="center", va="bottom", fontsize=8, color=INK)
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, fontsize=9.5, rotation=40, ha="right")
-    ax.set_ylabel(metric)
-    ax.set_ylim(0, max(vals) * 1.16)
-    ax.grid(axis="x", visible=False)
-    fig.tight_layout()
-    fig.savefig(fname, dpi=150)
-    plt.close(fig)
-    print(f"已生成 {fname}")
-    for n, v in items:
-        print(f"  {n:12s} {metric}={v:.4f}")
+make_charts(METHODS12, "all12")                       # 12 方法，无 LG
+make_charts(METHODS12 + ["Local+Global"], "all13")    # 13 方法，含 LG
