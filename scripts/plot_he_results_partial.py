@@ -47,14 +47,22 @@ METHODS = [
     ("DeepPT", "bench_deeppt_resnet50_unf", MAGENTA),
     ("ST-Net", "bench_st_net_unf", GREEN),
 ]
-# PCC 柱状图：黄、绿、蓝为主，清新浅色系
+# PCC 柱状图：黄、绿、蓝为主，很浅的柱色 + 稍深的散点色
 BAR_COLORS = {
-    "UNI2+MLP": "#6fa8dc",     # 浅蓝
-    "Pixel2Gene": "#f7cf5a",   # 浅黄
-    "SpatialEx": "#7ed4c3",    # 浅青绿
-    "Path2Space": "#eeb94e",   # 浅暗黄
-    "DeepPT": "#8fd694",       # 浅绿
-    "ST-Net": "#4a7ab5",       # 中蓝
+    "UNI2+MLP": "#a9c7ef",     # 极浅蓝
+    "Pixel2Gene": "#fbe39a",   # 极浅黄
+    "SpatialEx": "#b4e6da",    # 极浅青绿
+    "Path2Space": "#f6d689",   # 极浅暗黄
+    "DeepPT": "#b9e4bc",       # 极浅绿
+    "ST-Net": "#8fb7e6",       # 浅蓝
+}
+SCATTER_COLORS = {
+    "UNI2+MLP": "#2a78d6",     # 深蓝
+    "Pixel2Gene": "#d19a00",   # 深黄
+    "SpatialEx": "#149a74",    # 深青绿
+    "Path2Space": "#b98200",   # 深暗黄
+    "DeepPT": "#2f8f5a",       # 深绿
+    "ST-Net": "#2a5f9e",       # 深蓝
 }
 OUT_ROOT = "outputs"
 
@@ -101,17 +109,20 @@ cols = [BAR_COLORS[n] for n in names_s]
 
 fig, ax = plt.subplots(figsize=(8.4, 5.0))
 x = np.arange(len(names_s))
-ax.bar(x, means_s, yerr=stds_s, color=cols, width=0.6,
+# 误差棒只画上侧（mean + 1std）
+yerr_up = np.array([np.zeros(len(stds_s)), stds_s])
+ax.bar(x, means_s, yerr=yerr_up, color=cols, width=0.6,
        error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
-# 逐基因 PCC 散点（横向轻微抖动，展示分布）
+# 逐基因 PCC 散点（横向轻微抖动，展示分布；颜色比柱深以保持可见）
 rng = np.random.default_rng(0)
 for xi, n in zip(x, names_s):
     pccs = data[n]["pccs"]
     jx = rng.uniform(-0.18, 0.18, size=len(pccs))
-    ax.scatter(xi + jx, pccs, s=5, color=BAR_COLORS[n], alpha=0.35,
+    ax.scatter(xi + jx, pccs, s=6, color=SCATTER_COLORS[n], alpha=0.45,
                linewidths=0, zorder=2)
+# 数值标签放在柱顶内侧（避开误差棒线）
 for xi, m in zip(x, means_s):
-    ax.text(xi, m + 0.01, f"{m:.4f}", ha="center", va="bottom", fontsize=9, color=INK)
+    ax.text(xi, m - 0.012, f"{m:.4f}", ha="center", va="top", fontsize=9, color=INK)
 ax.set_xticks(x)
 ax.set_xticklabels(names_s, fontsize=10)
 ax.set_ylabel("PCC")
