@@ -148,6 +148,7 @@ ax.set_ylabel("Top-k 准确率")
 ax.set_title("Top-k 准确率随 k 变化的连续曲线（k=10..313）")
 ax.set_xlim(10, 313)                        # 横轴到 313
 ax.set_ylim(0.3, 1.0)                       # 纵轴到 1（k=313 时 acc=1.0）
+ax.set_xticks([10, 100, 200, 300, 313])     # 显式刻度，含起点 10 与终点 313
 ax.legend(loc="lower right", frameon=False, fontsize=9)
 fig.tight_layout()
 fig.savefig("topk_accuracy_unf_partial.png", dpi=150)
