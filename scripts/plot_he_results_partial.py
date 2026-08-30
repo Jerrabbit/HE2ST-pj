@@ -46,6 +46,7 @@ METHODS = [
     ("Path2Space", "bench_path2space_unf", YELLOW),
     ("DeepPT", "bench_deeppt_resnet50_unf", MAGENTA),
     ("ST-Net", "bench_st_net_unf", GREEN),
+    ("STFlow", "bench_stflow_unf", INK),
     ("Phoenix", "bench_phoenix_finetune", INK),
 ]
 # PCC 柱状图：黄、绿、蓝为主，很浅的柱色 + 稍深的散点色
@@ -56,6 +57,7 @@ BAR_COLORS = {
     "Path2Space": "#f6d689",   # 极浅暗黄
     "DeepPT": "#b9e4bc",       # 极浅绿
     "ST-Net": "#8fb7e6",       # 浅蓝
+    "STFlow": "#f6c4c9",       # 浅粉
     "Phoenix": "#d8c9f0",      # 极浅紫
 }
 SCATTER_COLORS = {
@@ -65,26 +67,40 @@ SCATTER_COLORS = {
     "Path2Space": "#b98200",   # 深暗黄
     "DeepPT": "#2f8f5a",       # 深绿
     "ST-Net": "#2a5f9e",       # 深蓝
+    "STFlow": "#c95a68",       # 深粉
     "Phoenix": "#6a4fb0",      # 深紫
 }
 OUT_ROOT = "outputs"
 
 
-def load_method(dirname):
-    base = os.path.join(OUT_ROOT, dirname)
-    # 逐基因 PCC：新格式 gene_pcc.csv 或旧格式 eval_metrics.csv_genes.csv
-    pccs = []
-    gp = os.path.join(base, "eval_metrics.csv_gene_pcc.csv")
-    if not os.path.exists(gp):
-        gp = os.path.join(base, "eval_metrics.csv_genes.csv")
-    with open(gp) as f:
+def _read_col(path, col):
+    out = []
+    with open(path) as f:
         r = csv.reader(f)
         header = next(r)
-        pcc_col = 1 if len(header) < 2 or header[1] == "PCC" else 1
         for row in r:
-            if len(row) > pcc_col and row[pcc_col] not in ("", "nan"):
-                pccs.append(float(row[pcc_col]))
-    pccs = np.array(pccs)
+            if len(row) > col and row[col] not in ("", "nan"):
+                out.append(float(row[col]))
+    return np.array(out)
+
+
+def load_method(dirname):
+    base = os.path.join(OUT_ROOT, dirname)
+    genes_csv = os.path.join(base, "eval_metrics.csv_genes.csv")
+    gene_pcc_csv = os.path.join(base, "eval_metrics.csv_gene_pcc.csv")
+    # 逐基因指标：优先 genes.csv（含 PCC/SPCC/AUROC/SSIM），缺失则用 gene_pcc.csv
+    pccs = _read_col(gene_pcc_csv, 1) if os.path.exists(gene_pcc_csv) else (
+        _read_col(genes_csv, 1) if os.path.exists(genes_csv) else np.array([]))
+    ssims = spccs = aurocs = None
+    if os.path.exists(genes_csv):
+        with open(genes_csv) as f:
+            header = next(csv.reader(f))
+        if "SSIM" in header:
+            ssims = _read_col(genes_csv, header.index("SSIM"))
+        if "SPCC" in header:
+            spccs = _read_col(genes_csv, header.index("SPCC"))
+        if "AUROC" in header:
+            aurocs = _read_col(genes_csv, header.index("AUROC"))
     # Top-k 曲线（缺失则返回 None，柱状图仍可用）
     ks, acc = None, None
     tk = os.path.join(base, "topk_curve.csv")
@@ -103,7 +119,8 @@ def load_method(dirname):
     if os.path.exists(tj):
         with open(tj) as f:
             res = json.load(f)
-    return {"name": None, "pccs": pccs, "ks": ks, "acc": acc, "res": res}
+    return {"name": None, "pccs": pccs, "ssims": ssims, "spccs": spccs,
+            "aurocs": aurocs, "ks": ks, "acc": acc, "res": res}
 
 
 data = {name: load_method(d) for name, d, _ in METHODS}
@@ -169,3 +186,43 @@ fig.tight_layout()
 fig.savefig("topk_accuracy_unf_partial.png", dpi=150)
 plt.close(fig)
 print("已生成 topk_accuracy_unf_partial.png")
+
+# ================= 3. SSIM 柱状图（±1std + 逐基因 SSIM 散点） =================
+ssim_names = [name for name, _, _ in METHODS
+              if data[name]["ssims"] is not None and len(data[name]["ssims"]) > 0]
+if ssim_names:
+    s_means = [data[n]["ssims"].mean() for n in ssim_names]
+    s_stds = [data[n]["ssims"].std() for n in ssim_names]
+    order_s = np.argsort(-np.array(s_means))
+    s_names_s = [ssim_names[i] for i in order_s]
+    s_means_s = [s_means[i] for i in order_s]
+    s_stds_s = [s_stds[i] for i in order_s]
+    s_cols = [BAR_COLORS[n] for n in s_names_s]
+    fig, ax = plt.subplots(figsize=(8.4, 5.0))
+    x = np.arange(len(s_names_s))
+    yerr_up = np.array([np.zeros(len(s_stds_s)), s_stds_s])
+    ax.bar(x, s_means_s, yerr=yerr_up, color=s_cols, width=0.6, alpha=0.55,
+           error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
+    rng = np.random.default_rng(1)
+    for xi, n in zip(x, s_names_s):
+        ss = data[n]["ssims"]
+        jx = rng.uniform(-0.18, 0.18, size=len(ss))
+        ax.scatter(xi + jx, ss, s=6, color=SCATTER_COLORS[n], alpha=0.45,
+                   linewidths=0, zorder=2)
+    for xi, m in zip(x, s_means_s):
+        ax.text(xi, m - 0.008, f"{m:.3f}", ha="center", va="top", fontsize=9,
+                color=INK, zorder=5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(s_names_s, fontsize=10)
+    ax.set_ylabel("SSIM")
+    ymax = max(data[n]["ssims"].max() for n in ssim_names)
+    ax.set_ylim(0, ymax + 0.05)
+    ax.grid(axis="x", visible=False)
+    fig.tight_layout()
+    fig.savefig("benchmark_ssim_bar_unf_partial.png", dpi=150)
+    plt.close(fig)
+    print("已生成 benchmark_ssim_bar_unf_partial.png")
+    for n, m, s in zip(s_names_s, s_means_s, s_stds_s):
+        print(f"  {n:12s} {m:.3f} ± {s:.3f}（散点 min {data[n]['ssims'].min():.3f} ~ max {data[n]['ssims'].max():.3f}）")
+else:
+    print("没有 SSIM 数据，跳过 SSIM 柱状图")
