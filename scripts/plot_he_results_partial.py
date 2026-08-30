@@ -141,12 +141,13 @@ for n, m, s in zip(names_s, means_s, stds_s):
 fig, ax = plt.subplots(figsize=(9.5, 5.2))
 for name, _, color in METHODS:
     d = data[name]
-    ax.plot(d["ks"], d["acc"], color=color, lw=2, label=name)
+    m = d["ks"] >= 10                      # 曲线从 k=10 开始
+    ax.plot(d["ks"][m], d["acc"][m], color=color, lw=2, label=name)
 ax.set_xlabel("k（Top-k 前 k 个基因）")
 ax.set_ylabel("Top-k 准确率")
 ax.set_title("Top-k 准确率随 k 变化的连续曲线（k=10..313）")
-ax.set_xlim(0, 313)
-ax.set_ylim(0.35, 0.75)
+ax.set_xlim(10, 313)                        # 横轴到 313
+ax.set_ylim(0.3, 1.0)                       # 纵轴到 1（k=313 时 acc=1.0）
 ax.legend(loc="lower right", frameon=False, fontsize=9)
 fig.tight_layout()
 fig.savefig("topk_accuracy_unf_partial.png", dpi=150)
