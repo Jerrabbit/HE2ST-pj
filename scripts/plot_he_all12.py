@@ -47,15 +47,17 @@ METHOD_COLORS = {
     "GHIST":      "#c9e8c0",   # 浅薄荷
     "Hist2ST":    "#f3d9a8",   # 浅杏
     "BLEEP":      "#cfe0f2",   # 浅长春花蓝
+    "Local+Global": "#f8cf8e",  # 浅橙（核心创新，突出）
 }
 
-# ---- 旧未过滤占位值（未跑方法） ----
+# ---- 旧未过滤占位值（未跑方法 / LG 未跑） ----
 PLACEHOLDER = {
     "BLEEP":   (0.2131, 0.2056, 0.666),
     "Phoenix": (0.2055, 0.1585, 0.610),
     "GHIST":   (0.3164, 0.2952, 0.700),
     "Hist2ST": (0.2139, 0.2046, 0.670),
     "SQUALL":  (0.3281, 0.2873, 0.742),
+    "Local+Global": (0.3712, 0.3071, 0.759),  # 旧未过滤 LG（l1=112, l2=56），本轮调参最后跑
 }
 METHOD_DIRS = {
     "UNI2+MLP":   "bench_uni2_mlp_unf",
@@ -80,8 +82,8 @@ def get_metrics(name):
     return ph if ph else (float("nan"), float("nan"), float("nan"))
 
 
-METHODS = ["UNI2+MLP", "SQUALL", "GHIST", "SpatialEx", "Pixel2Gene", "Path2Space",
-           "DeepPT", "STFlow", "ST-Net", "BLEEP", "Hist2ST", "Phoenix"]
+METHODS = ["Local+Global", "UNI2+MLP", "SQUALL", "GHIST", "SpatialEx", "Pixel2Gene",
+           "Path2Space", "STFlow", "DeepPT", "ST-Net", "BLEEP", "Hist2ST", "Phoenix"]
 DATA = {n: get_metrics(n) for n in METHODS}
 
 CHART_CFG = [
