@@ -38,15 +38,24 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False, "font.family": "sans-serif",
 })
 
-# ---- 方法定义（固定颜色，跨图一致） ----
+# ---- 方法定义（Top-k 曲线用 dataviz 槽位色；柱状图单独用黄绿蓝配色） ----
 METHODS = [
     ("UNI2+MLP", "bench_uni2_mlp_unf", BLUE),
-    ("Pixel2Gene (cell)", "bench_pixel2gene_cell_unf", ORANGE),
+    ("Pixel2Gene", "bench_pixel2gene_cell_unf", ORANGE),
     ("SpatialEx", "bench_spatialex_unf", AQUA),
     ("Path2Space", "bench_path2space_unf", YELLOW),
-    ("DeepPT (R50)", "bench_deeppt_resnet50_unf", MAGENTA),
+    ("DeepPT", "bench_deeppt_resnet50_unf", MAGENTA),
     ("ST-Net", "bench_st_net_unf", GREEN),
 ]
+# PCC 柱状图：黄、绿、蓝为主（2 黄 + 2 绿 + 2 蓝）
+BAR_COLORS = {
+    "UNI2+MLP": "#2a78d6",     # 蓝
+    "Pixel2Gene": "#eda100",   # 黄
+    "SpatialEx": "#1baf7a",    # 青绿
+    "Path2Space": "#c98500",   # 暗黄
+    "DeepPT": "#008300",       # 绿
+    "ST-Net": "#184f95",       # 深蓝
+}
 OUT_ROOT = "outputs"
 
 
@@ -80,35 +89,36 @@ data = {name: load_method(d) for name, d, _ in METHODS}
 for name in data:
     data[name]["name"] = name
 
-# ================= 1. PCC 带误差棒柱状图 =================
+# ================= 1. PCC 带误差棒柱状图（纵向，误差棒=min/max 逐基因 PCC） =================
 names = [name for name, _, _ in METHODS]
 means = [data[n]["pccs"].mean() for n in names]
-stds = [data[n]["pccs"].std() for n in names]
+pmin = [data[n]["pccs"].min() for n in names]
+pmax = [data[n]["pccs"].max() for n in names]
 order = np.argsort(-np.array(means))  # 按 PCC 降序
 names_s = [names[i] for i in order]
 means_s = [means[i] for i in order]
-stds_s = [stds[i] for i in order]
-name_to_color = {name: c for name, _, c in METHODS}
-cols = [name_to_color[n] for n in names_s]  # 固定颜色随实体
+lowers = [means_s[i] - pmin[order[i]] for i in range(len(names_s))]  # mean - min
+uppers = [pmax[order[i]] - means_s[i] for i in range(len(names_s))]  # max - mean
+yerr = np.array([lowers, uppers])
+cols = [BAR_COLORS[n] for n in names_s]
 
-fig, ax = plt.subplots(figsize=(8.6, 4.8))
-bars = ax.barh(range(len(names_s)), means_s, xerr=stds_s, color=cols, height=0.6,
-               error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
-for i, (m, s) in enumerate(zip(means_s, stds_s)):
-    ax.text(m + s + 0.004, i, f"{m:.4f}±{s:.3f}", va="center", fontsize=9, color=INK)
-ax.set_yticks(range(len(names_s)))
-ax.set_yticklabels(names_s, fontsize=10)
-ax.invert_yaxis()
-ax.set_xlabel("PCC（rep1→rep2 未过滤，mean±1std 逐基因 PCC）")
-ax.set_title("已完成 6 方法 PCC（带误差棒）")
-ax.set_xlim(0, max(m + s for m, s in zip(means_s, stds_s)) + 0.06)
-ax.grid(axis="y", visible=False)
+fig, ax = plt.subplots(figsize=(7.6, 4.6))
+x = np.arange(len(names_s))
+ax.bar(x, means_s, yerr=yerr, color=cols, width=0.6,
+       error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
+for xi, m in zip(x, means_s):
+    ax.text(xi, m + 0.01, f"{m:.4f}", ha="center", va="bottom", fontsize=9, color=INK)
+ax.set_xticks(x)
+ax.set_xticklabels(names_s, fontsize=10)
+ax.set_ylabel("PCC")
+ax.set_ylim(0, max(pmax) + 0.1)
+ax.grid(axis="x", visible=False)
 fig.tight_layout()
 fig.savefig("benchmark_pcc_bar_unf_partial.png", dpi=150)
 plt.close(fig)
 print("已生成 benchmark_pcc_bar_unf_partial.png")
-for n, m, s in zip(names_s, means_s, stds_s):
-    print(f"  {n:18s} {m:.4f} ± {s:.4f}")
+for n, m in zip(names_s, means_s):
+    print(f"  {n:12s} {m:.4f}（min {pmin[order[names_s.index(n)]]:.3f} ~ max {pmax[order[names_s.index(n)]]:.3f}）")
 
 # ================= 2. Top-k 准确率连续曲线 =================
 fig, ax = plt.subplots(figsize=(9.5, 5.2))
