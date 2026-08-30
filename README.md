@@ -7,6 +7,144 @@
 2. Local（局部组织形态）与 Global（组织上下文）信息是否互补？如何简单利用两者？
 3. 如何建立覆盖不同泛化场景的标准 Benchmark，公平比较现有方法？
 
+## 项目汇报：方法与实验综述（2026-08-30）
+
+### 1. Benchmark 的 12 种方法
+
+本 benchmark 统一在 **per-cell（Xenium）** 粒度评估，包含 1 个本仓库基线（UNI2+MLP）和
+11 种现有论文方法。各方法官方架构与原始论文如下：
+
+| 方法 | 官方架构 | 原始论文（标题 · 年份 · 期刊） |
+|---|---|---|
+| **UNI2+MLP**（基线） | UNI2 特征 + MLP 头 | 编码器 UNI：Chen et al., *Towards a general-purpose foundation model for computational pathology*, **Nature Medicine 2024**（本项目用 UNI2 更新权重） |
+| **BLEEP** | 双模态对比学习（图像↔表达嵌入对齐 + 参考集检索） | Xie et al., *Spatially Resolved Gene Expression Prediction from Histology Images via Bi-modal Contrastive Learning*, **NeurIPS 2023** |
+| **Phoenix** | 流匹配生成（DINOv2 编码器 + 流 transformer） | *Pan-cancer virtual spatial transcriptomics from routine histology with Phoenix*, **bioRxiv 2026** |
+| **Path2Space** | MLP 集成（CTransPath 特征 + MLP 回归头） | Shulman et al., *Path2Space: An AI Approach for Cancer Biomarker Discovery Via Histopathology Inferred Spatial Transcriptomics*, **Cell 2026**（bioRxiv 2024） |
+| **SpatialEx** | 超图卷积（UNI 特征 + HGNN） | Liu et al., *High-Parameter Spatial Multi-Omics through Histology-Anchored Integration*, **Nature Methods 2025** |
+| **Pixel2Gene** | HIPT 层级特征 + ForwardSum 头 | *Pixel2Gene enables histology-guided reconstruction and prediction of spatial gene expression*, **bioRxiv 2026**（HIPT：Chen et al., **ICLR 2022**） |
+| **GHIST** | UNet3+ 核分割 + 多任务图模型（**cell 级**） | Fu et al., *Spatial gene expression at single-cell resolution from histology using deep learning with GHIST*, **Nature Methods 2025** |
+| **ST-Net** | 预训练 CNN（DenseNet121）特征回归 | He et al., *Integrating spatial gene expression and breast tumour morphology via deep learning*, **Nature Biomedical Engineering 2020** |
+| **Hist2ST** | Convmixer + Transformer + GNN（ZINB 输出） | Zeng et al., *Spatial transcriptomics prediction from histology jointly through Transformer and graph neural networks*, **Briefings in Bioinformatics 2022** |
+| **DeepPT** | ResNet50 整片特征 → AE → MLP（**slide 级**） | Hoang et al., *A deep-learning framework to predict cancer treatment response from histopathology images through imputed transcriptomics*, **Nature Cancer 2024** |
+| **SQUALL** | 多模态 Transformer（555M 编码器 + 解码器） | Zhang et al., *Integrating Histology with Spatial Molecular Programs Using a Multimodal Foundation Model*, **bioRxiv 2026** |
+| **STFlow** | 整片流匹配（ZINB 先验，局部空间注意力） | Huang et al., *Scalable Generation of Spatial Transcriptomics from Histology Images via Whole-Slide Flow Matching*, **ICML 2025** |
+
+### 2. 各方法实现方式（"尽量严格遵循官方"原则）
+
+**核心原则：编码器冻结、头部/模型训练**——特征提取用到的编码器（UNI2/CTransPath/HIPT/
+resnet50/DenseNet 等）一律冻结（通常以预提取特征参与），接的预测头训练。ST-Net/BLEEP
+按此原则用 `--no_finetune` 冻结版。无预训练编码器的方法（Hist2ST/GHIST/Phoenix/STFlow
+的 flow）从头训练。各方法原始粒度与到 cell-level 的适配：
+
+| 方法 | 原始粒度 | cell-level 适配 | 冻结 | 训练 | 预训练权重 |
+|---|---|---|---|---|---|
+| **UNI2+MLP** | 基础模型（patch） | 每细胞 256×256 patch → UNI2 特征 | UNI2 | 统一 MLP 头 | UNI2（ViT-L/14） |
+| **DeepPT** | slide（bulk 表达） | 每细胞 patch → ResNet50 2048-d | ResNet50 | AE(2048→512) + 官方 `MLP_regression` | ResNet50-ImageNet |
+| **Pixel2Gene** | spot（Visium） | 每细胞 patch → HIPT level-1 CLS(384-d) | HIPT | 官方 `ForwardSumModel` 头 | HIPT-4K（DINO） |
+| **SpatialEx** | spot（Visium 超图） | 每细胞为超图节点，kNN(k=7) 自环 | UNI2 | HGNN 超图卷积头 | UNI2 |
+| **ST-Net** | spot（Visium） | 每细胞 patch → DenseNet121 | DenseNet | 线性回归头（官方 bias 初始化） | DenseNet121-ImageNet |
+| **BLEEP** | spot（Visium 对比） | 每细胞 patch → resnet50 | resnet50 | 对比投影头 + 参考集检索 | resnet50-ImageNet |
+| **SQUALL** | spot（224 patch 多模态） | 每细胞 patch = 独立 spot | SQUALL 编码器（555M） | 统一 MLP / 官方 `TransformerDecoder` 头 | `SQUALL_full.pth` |
+| **Phoenix** | cell（生成） | 本身 cell 级 | DINOv2 ViT-Giant | flow transformer（微调） | 官方 `flow_model.pth` |
+| **STFlow** | spot（Visium 流匹配） | 每细胞为节点，ROI 批内流匹配 | UNI2 | 流匹配去噪器 | UNI2 |
+| **Path2Space** | spot（Visium MLP 集成） | 每细胞 patch → CTransPath(768-d) | CTransPath | 官方 `MLP_regression_relu_two` 头 | `ctranspath.pth` |
+| **GHIST** | cell（核级分割+图） | 本身 cell 级 | — | UNet + Framework 图（从头） | 无 |
+| **Hist2ST** | spot（Visium） | 每细胞为节点，ROI 内图 | — | Convmixer+Transformer+GNN（从头） | 无 |
+
+**统一配置**：50 epoch + val_PCC patience=10 早停 + lr=1e-3 AdamW + `log1p_zscore` 归一化
+（统计量只在训练集拟合，测试集复用防泄漏）；统一评估 PCC/SPCC/cell_PCC/SSIM/Top-k/AUROC。
+特征文件预提取、逐基因指标等全部共用 `common/` 模块保证公平。
+
+**按官方配置的特例**（不套统一协议，原因）：
+- **Hist2ST**：官方 100ep + lr 1e-5 + ZINB + bake 自蒸馏（统一 MSE 协议下不收敛，官方配置才有学习）。
+- **Phoenix**：只做微调（flow 可训练，DINOv2 冻结），采样用官方 zuko `odeint`。
+- **STFlow**：官方协议（log1p+zinb 先验 + 100ep + patience 20 + lr 5e-4 + Adam + clip_grad）。
+- **Path2Space**：官方 CTransPath 特征管线（Macenko 染色归一化 + ctx512 大上下文），重训官方 MLP 头。
+- **GHIST**：官方 Framework + 9 损失（分割/细胞型/表达/免疫/组成）。
+- **SQUALL/Pixel2Gene**：官方自带预测头（SQUALL 解码器头 / ForwardSum 头）按用户原则沿用，不换统一 MLP。
+- **ST-Net/BLEEP**：官方架构本身微调编码器，按项目冻结原则用 `--no_finetune`（微调版仅作参考）。
+
+**预训练权重的使用**：特征回归类方法（UNI2/DeepPT/Pixel2Gene/SpatialEx/ST-Net/BLEEP/
+SQUALL/STFlow/Path2Space）加载各自的冻结编码器权重提特征；Phoenix 加载官方
+`flow_model.pth`（含 DINOv2 + flow）做微调；GHIST/Hist2ST 无预训练权重从头训练。
+
+### 3. 最终数据过滤方式
+
+数据为 10x **Xenium 乳腺癌公开数据（TENX191）**，H&E 注册图相对 Xenium 空间坐标 **y 翻转**
+（`image_row ≈ −2.749·y + 11313`），物理覆盖范围有限。最终过滤只保留 **对 HE→ST 任务有用**
+的细胞，分两类：
+1. **去"不在 H&E 上"的细胞**：坐标超出 H&E 覆盖范围的细胞没有 H&E 输入，无法预测。
+   - rep2 有 **6,835 个（5.8%）** 落在 Morphology 视野底部条带（y>4162 μm，H&E 覆盖不到），
+     已在 h5ad 阶段排除；rep1 无此现象（0 个）。
+2. **去空细胞**：总转录本 `total_counts < 10` 的"空细胞"（几乎无表达，无可预测目标）。
+   - rep1 剔 **3,780 个**、rep2 剔 **~396 个**，也已在 h5ad 阶段排除。
+   - 这是 Xenium 标准 QC（不是 min_genes/min_umis 类超参数），可解释、跨数据集可复现。
+
+因此本 benchmark 直接使用 **rep1（164,000 细胞）→ rep2（111,345 细胞）** 作为"过滤后"数据
+（即最初所谓"未过滤"数据——其"不在 H&E 上"与"空细胞"已在上游排除）。
+
+### 4. 该过滤方式下的指标表（rep1 → rep2）
+
+> 评估新增 **SSIM**（空间表达图结构相似度，统一 log1p 空间）与 **全 k=10..313 Top-k 曲线**
+> （`topk_curve.csv`）。以下为 **2026-08-29 起的新跑结果**（未过滤 rep1→rep2）；**尚未跑完的
+> 方法暂用最初"未过滤"（相邻切片基准）指标代替**，SSIM/逐基因 PCC 空缺（待补）。
+
+| 方法 | PCC | SPCC | cell_PCC | SSIM | Top-10 | Top-50 | Top-100 | AUROC | 状态 |
+|---|---|---|---|---|---|---|---|---|---|
+| **UNI2+MLP** | **0.3240** | 0.2838 | 0.6709 | **0.4467** | 0.5093 | 0.5776 | 0.6290 | 0.7369 | ✅ 新跑 |
+| **Pixel2Gene cell** | 0.2947 | 0.2695 | 0.6564 | 0.4388 | 0.4930 | 0.5552 | 0.5502 | 0.7220 | ✅ 新跑 |
+| **SpatialEx** | 0.2944 | 0.2699 | 0.6506 | 0.4263 | 0.4912 | 0.5652 | 0.6172 | 0.7277 | ✅ 新跑 |
+| **Path2Space** | 0.2835 | 0.2594 | 0.6476 | 0.4066 | 0.4805 | 0.5661 | 0.6260 | 0.7183 | ✅ 新跑 |
+| **DeepPT (R50)** | 0.2684 | 0.2516 | 0.6405 | 0.4053 | 0.4721 | 0.5619 | 0.6247 | 0.7123 | ✅ 新跑 |
+| **ST-Net（冻结）** | 0.2423 | 0.2348 | 0.6209 | 0.3712 | 0.4546 | 0.5502 | 0.6208 | 0.6991 | ✅ 新跑 |
+| **SQUALL（解码器头）** | 0.3281 | 0.2873 | — | — | 0.507 | 0.572 | 0.623 | 0.742 | ⏳ 待新跑 |
+| **GHIST** | 0.3164 | 0.2952 | — | — | 0.500 | 0.525 | 0.516 | 0.700 | ⏳ 待新跑 |
+| **Hist2ST（官方配置）** | 0.2139 | 0.2046 | — | — | 0.431 | 0.531 | 0.611 | 0.670 | ⏳ 待新跑 |
+| **BLEEP（冻结）** | 0.2131 | 0.2056 | — | — | 0.440 | 0.525 | 0.601 | 0.666 | ⏳ 待新跑 |
+| **Phoenix 微调** | 0.2055 | 0.1585 | — | — | 0.455 | 0.496 | 0.525 | 0.610 | ⏳ 待新跑 |
+| **STFlow（官方协议）** | 0.0933* | 0.1572 | — | — | 0.242 | 0.289 | 0.405 | 0.614 | ⏳ 待新跑 |
+
+> *STFlow 0.0933 为最初"未过滤"的本地适配版结果；官方配置版在过滤数据上为 **0.2764**，
+> 新跑将用官方协议（未过滤），结果待出。
+
+**已完成 6 方法小结**：新跑结果与最初"未过滤"基准高度一致（UNI2+MLP 0.3240 vs 0.3245 等），
+**UNI2+MLP 目前领先（0.3240）**，SSIM 亦最高（0.4467）——符合"简单表示 > 复杂结构"主线。
+
+### 5. Local+Global 两步调参（核心创新）
+
+**架构**：`concat[UNI2(op1 放缩中心) CLS, UNI2 中心 patch token 复用(op2)] → 统一 MLP`。
+- **op1（Global）**：以细胞为中心取 l1×l1 块 → resize 224 → UNI2 [CLS]，负责 tissue architecture / microenvironment。
+- **op2（Local）**：**复用 op1 同一次 forward 的 patch token 网格**（UNI2 patch14 无重叠，224×224 一次出 16×16=256 token），中心裁剪 l2=14k 正对网格中心 k×k 子块，取 mean-pool 作 Local 特征，负责 morphology / nucleus / cell neighborhood。
+- **关键约束：只做一次 forward**——op2 的全部 l2 值免费复用同一份 token，提取成本为零。
+
+**两步调参**（未过滤 rep1→rep2，每配置 30ep 取 best val_PCC）：
+1. **op1 sweep（Global 视野，l1 448→28 步长 28）**：PCC–l1 曲线为**倒 U 型**，
+   **best l1=112（0.3365）**（≈40.7 µm，比标准 224 基线 0.3245 高 +0.012）。
+   曲线见 [`local_global_op1_sweep.png`](local_global_op1_sweep.png)。
+2. **op2 sweep（Local 裁剪，l2 28..112，固定 l1=112）**：倒 U 型，**best l2=56（0.3727）**
+   （中心 4×4 token mean-pool）；加入 Local 后 0.3365→0.3727，**+0.036**。
+   曲线见 [`local_global_op2_sweep.png`](local_global_op2_sweep.png)。
+
+**最终 50ep：PCC 0.3712**（SPCC 0.3071 / Top-10 0.539 / Top-50 0.588 / Top-100 0.630 /
+AUROC 0.759），vs UNI2+MLP 基线 0.3245，**+0.047**。**消融**：Local-only 0.3732 ≈
+Local+Global 0.3712，**Local 分支主导**（Global 的 CLS 几乎无增量，单次 forward 使中心
+token 已携带全局上下文）。全部增益来自**特征表示**（追加 Local 视野），模型仍是同一 MLP——
+印证"**性能提升来自更有效的表示，而非复杂空间结构**"。
+
+### 6. 后续计划
+
+按优先级：
+1. **本轮收尾**：在"未过滤" rep1→rep2 上跑完剩余方法（stflow/hist2st/bleep）→ LG 完整调参
+   （op1/op2 sweep → 最终 50ep）→ GHIST（OOM 恢复）；全部补齐 SSIM + 全 Top-k 曲线 +
+   误差棒柱状图（±1 std 逐基因 PCC）。
+2. **三层次泛化评测**（核心）：
+   - **同切片左右分半**：同一张切片左半训练、右半测试。
+   - **相邻切片**：一张训练、另一张测试（注意 MPP 统一预处理）。
+   - **同癌种多切片**：如乳腺癌 10 张，5 训练 / 5 测试。
+3. **多组学验证**：肾癌切片（基因 + 蛋白双组学）。
+4. **跨癌种验证**：结直肠 / 肺 / 卵巢训练 → 乳腺癌测试。
+5. 同步更新 README/CLAUDE.md 与 GitHub。
+
 ## 目录结构
 
 ```
