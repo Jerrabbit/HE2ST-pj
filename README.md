@@ -891,6 +891,42 @@ lr1e-5；统一协议下不收敛，官方配置才有学习）。
 4. **归一化语义**：PCC/SPCC 在归一化空间（统计量来自训练集）；Top-k/AUROC 经
    `_invert_normalization` 逆变换回 raw counts 语义。
 
+### SSIM 指标：空间表达图结构相似度（2026-08-30 新增）
+
+**含义**：衡量"预测的空间表达模式"与"真实的空间表达模式"在**局部结构**上的相似程度，
+补足 PCC（全局逐基因相关）看不到的空间结构一致性。范围 **[-1, 1]，越高越好**，1 = 两幅
+空间表达图完全一致。
+
+**计算流程**（`harness.py::_spatial_ssim` + `metrics.py::ssim_2d`，逐基因）：
+
+1. **栅格化成"空间表达图"**：用测试集细胞坐标（`metadata.csv` 的 x_centroid/y_centroid；
+   GHIST 用核分割质心）建一张 2D 网格（`_ssim_grid_dims`：默认最长边 224 px、按包围盒
+   纵横比保持），每个细胞映射到唯一网格 bin（`_rasterize_bins`）。对每个基因 g，把该
+   基因的跨细胞表达值按 bin 聚合（bin 内多细胞取均值、空 bin 补 0），得到真实图 T_g 与
+   预测图 P_g。
+2. **逐基因 SSIM**（Wang et al. 2004 标准公式，高斯窗 σ=1.5 ≈ 7×7）：
+   ```
+   SSIM(T, P) = mean  ( (2·μ_T·μ_P + C1)(2·σ_TP + C2) )
+                       ( (μ_T² + μ_P² + C1)(σ_T² + σ_P² + C2) )
+   ```
+   其中 μ、σ 为**局部**统计量，σ_TP 为局部协方差；C1=(0.01·L)²、C2=(0.03·L)²，
+   L = data_range（两图 max−min）。同时考量**亮度**（局部均值）、**对比度**（局部方差）、
+   **结构**（局部相关）三部分。
+3. **统一 log1p(counts) 空间**：SSIM 对所有方法都取 `log1p(clip(raw_true,0))` vs
+   `log1p(clip(raw_pred,0))` 计算，保证**跨方法严格可比**——zscore 空间会把幅度/偏移偏差
+   归一化掉导致 SSIM 虚高（实测弱预测 0.3× 幅度时 zscore=1.0 vs log1p=0.43）。PCC/SPCC/
+   cell_PCC/Top-k/AUROC 对单调/仿射变换不变，不受该空间选择影响。
+4. **汇总**：对全部基因取 nanmean → 报告的 SSIM；`details=True` 时额外返回逐基因 SSIM
+   （`gene_ssims`，CSV 导出）。
+
+**需要的输入**：细胞坐标（测试集）。训练期验证默认不计算（省时）；测试期通过
+`evaluate(..., ssim=True)` 或各 `evaluate_slide` 计算。
+
+**与 PCC 的区别**：PCC 是逐基因跨细胞的**全局**线性相关（对尺度/偏移不变）；SSIM 是
+**局部**空间结构相似度，捕捉"高/低表达是否落在对的位置"。例如已完成方法中 **stflow 的
+SSIM 最高（0.4498）但 PCC 较低（0.2696）**——流匹配生成的空间模式结构保真度高，但逐基因
+线性相关偏弱；说明 SSIM 与 PCC 互补，不能互相替代。
+
 ### 检查结论
 
 - **所有方法最终指标均来自 `compute_metrics_vectorized`**（或其调用者 evaluate/evaluate_slide），
