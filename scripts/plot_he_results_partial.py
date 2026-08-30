@@ -109,9 +109,9 @@ cols = [BAR_COLORS[n] for n in names_s]
 
 fig, ax = plt.subplots(figsize=(8.4, 5.0))
 x = np.arange(len(names_s))
-# 误差棒只画上侧（mean + 1std）
+# 误差棒只画上侧（mean + 1std）；柱半透明，让下方散点透出
 yerr_up = np.array([np.zeros(len(stds_s)), stds_s])
-ax.bar(x, means_s, yerr=yerr_up, color=cols, width=0.6,
+ax.bar(x, means_s, yerr=yerr_up, color=cols, width=0.6, alpha=0.55,
        error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
 # 逐基因 PCC 散点（横向轻微抖动，展示分布；颜色比柱深以保持可见）
 rng = np.random.default_rng(0)
@@ -120,9 +120,10 @@ for xi, n in zip(x, names_s):
     jx = rng.uniform(-0.18, 0.18, size=len(pccs))
     ax.scatter(xi + jx, pccs, s=6, color=SCATTER_COLORS[n], alpha=0.45,
                linewidths=0, zorder=2)
-# 数值标签放在柱顶内侧（避开误差棒线）
+# 数值标签放在柱顶内侧（避开误差棒线，zorder 最上层）
 for xi, m in zip(x, means_s):
-    ax.text(xi, m - 0.012, f"{m:.4f}", ha="center", va="top", fontsize=9, color=INK)
+    ax.text(xi, m - 0.012, f"{m:.4f}", ha="center", va="top", fontsize=9,
+            color=INK, zorder=5)
 ax.set_xticks(x)
 ax.set_xticklabels(names_s, fontsize=10)
 ax.set_ylabel("PCC")
