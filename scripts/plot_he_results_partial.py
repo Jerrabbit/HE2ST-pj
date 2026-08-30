@@ -47,14 +47,14 @@ METHODS = [
     ("DeepPT", "bench_deeppt_resnet50_unf", MAGENTA),
     ("ST-Net", "bench_st_net_unf", GREEN),
 ]
-# PCC 柱状图：黄、绿、蓝为主（2 黄 + 2 绿 + 2 蓝）
+# PCC 柱状图：黄、绿、蓝为主，清新浅色系
 BAR_COLORS = {
-    "UNI2+MLP": "#2a78d6",     # 蓝
-    "Pixel2Gene": "#eda100",   # 黄
-    "SpatialEx": "#1baf7a",    # 青绿
-    "Path2Space": "#c98500",   # 暗黄
-    "DeepPT": "#008300",       # 绿
-    "ST-Net": "#184f95",       # 深蓝
+    "UNI2+MLP": "#6fa8dc",     # 浅蓝
+    "Pixel2Gene": "#f7cf5a",   # 浅黄
+    "SpatialEx": "#7ed4c3",    # 浅青绿
+    "Path2Space": "#eeb94e",   # 浅暗黄
+    "DeepPT": "#8fd694",       # 浅绿
+    "ST-Net": "#4a7ab5",       # 中蓝
 }
 OUT_ROOT = "outputs"
 
@@ -89,36 +89,41 @@ data = {name: load_method(d) for name, d, _ in METHODS}
 for name in data:
     data[name]["name"] = name
 
-# ================= 1. PCC 带误差棒柱状图（纵向，误差棒=min/max 逐基因 PCC） =================
+# ================= 1. PCC 带误差棒柱状图（±1std + 逐基因 PCC 散点） =================
 names = [name for name, _, _ in METHODS]
 means = [data[n]["pccs"].mean() for n in names]
-pmin = [data[n]["pccs"].min() for n in names]
-pmax = [data[n]["pccs"].max() for n in names]
+stds = [data[n]["pccs"].std() for n in names]
 order = np.argsort(-np.array(means))  # 按 PCC 降序
 names_s = [names[i] for i in order]
 means_s = [means[i] for i in order]
-lowers = [means_s[i] - pmin[order[i]] for i in range(len(names_s))]  # mean - min
-uppers = [pmax[order[i]] - means_s[i] for i in range(len(names_s))]  # max - mean
-yerr = np.array([lowers, uppers])
+stds_s = [stds[i] for i in order]
 cols = [BAR_COLORS[n] for n in names_s]
 
-fig, ax = plt.subplots(figsize=(7.6, 4.6))
+fig, ax = plt.subplots(figsize=(8.4, 5.0))
 x = np.arange(len(names_s))
-ax.bar(x, means_s, yerr=yerr, color=cols, width=0.6,
+ax.bar(x, means_s, yerr=stds_s, color=cols, width=0.6,
        error_kw=dict(ecolor=INK, lw=1.2, capsize=4), zorder=3)
+# 逐基因 PCC 散点（横向轻微抖动，展示分布）
+rng = np.random.default_rng(0)
+for xi, n in zip(x, names_s):
+    pccs = data[n]["pccs"]
+    jx = rng.uniform(-0.18, 0.18, size=len(pccs))
+    ax.scatter(xi + jx, pccs, s=5, color=BAR_COLORS[n], alpha=0.35,
+               linewidths=0, zorder=2)
 for xi, m in zip(x, means_s):
     ax.text(xi, m + 0.01, f"{m:.4f}", ha="center", va="bottom", fontsize=9, color=INK)
 ax.set_xticks(x)
 ax.set_xticklabels(names_s, fontsize=10)
 ax.set_ylabel("PCC")
-ax.set_ylim(0, max(pmax) + 0.1)
+ymax = max(data[n]["pccs"].max() for n in names)
+ax.set_ylim(0, ymax + 0.08)
 ax.grid(axis="x", visible=False)
 fig.tight_layout()
 fig.savefig("benchmark_pcc_bar_unf_partial.png", dpi=150)
 plt.close(fig)
 print("已生成 benchmark_pcc_bar_unf_partial.png")
-for n, m in zip(names_s, means_s):
-    print(f"  {n:12s} {m:.4f}（min {pmin[order[names_s.index(n)]]:.3f} ~ max {pmax[order[names_s.index(n)]]:.3f}）")
+for n, m, s in zip(names_s, means_s, stds_s):
+    print(f"  {n:12s} {m:.4f} ± {s:.3f}（散点 min {data[n]['pccs'].min():.3f} ~ max {data[n]['pccs'].max():.3f}）")
 
 # ================= 2. Top-k 准确率连续曲线 =================
 fig, ax = plt.subplots(figsize=(9.5, 5.2))
