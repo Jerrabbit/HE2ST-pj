@@ -59,3 +59,46 @@ class MLPHead(nn.Module):
             x = x.to(device)
         self.eval()
         return self.forward(x)
+
+
+class RefMLPHead(nn.Module):
+    """参考架构 MLP 头（methods/uni2_mlp/MLP架构参考.txt，已验证更好性能）。
+
+    架构（参考文件的 active 版本）：
+        LayerNorm(input_dim) → Linear(input→512) → GELU → Dropout
+        → Linear(512→output_dim) → **Softplus**（输出恒正 → 需正数目标空间，如 log1p）
+
+    也可用参考文件注释版（无 LayerNorm/Softplus 的 2 层 MLP），见 `use_softplus=False`。
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 512,
+        output_dim: int = 313,
+        dropout: float = 0.1,
+        use_softplus: bool = True,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.head = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim),
+        )
+        if use_softplus:
+            self.head.append(nn.Softplus())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """输入 (B, input_dim) → 输出 (B, output_dim) 基因表达预测（恒正若 Softplus）。"""
+        return self.head(x)
+
+    @torch.no_grad()
+    def predict(self, x: torch.Tensor, device: str | None = None) -> torch.Tensor:
+        if device is not None:
+            x = x.to(device)
+        self.eval()
+        return self.forward(x)

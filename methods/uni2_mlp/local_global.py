@@ -31,7 +31,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from common.models.mlp_head import MLPHead
+from common.models.mlp_head import MLPHead, RefMLPHead
 
 FEATURE_DIM = 1536  # UNI2 [CLS] token 维度
 
@@ -65,6 +65,8 @@ class LocalGlobalMLP(nn.Module):
         l1: int = 512,
         l2: int = 56,
         norm_concat: bool = False,
+        head_variant: str = "standard",
+        use_softplus: bool = True,
     ):
         super().__init__()
         self.num_genes = int(num_genes)
@@ -72,7 +74,12 @@ class LocalGlobalMLP(nn.Module):
         self.l2 = int(l2)
         if feature_files:
             self.feature_files = list(feature_files)
-        self.head = MLPHead(in_dim, list(mlp_hidden_dims), self.num_genes, dropout)
+        if head_variant == "ref":
+            # 参考架构头（LayerNorm→512→GELU→Dropout→313→Softplus），需正数目标空间(log1p)
+            self.head = RefMLPHead(in_dim, hidden_dim=512, output_dim=self.num_genes,
+                                   dropout=dropout, use_softplus=use_softplus)
+        else:
+            self.head = MLPHead(in_dim, list(mlp_hidden_dims), self.num_genes, dropout)
         # 对比变体：concat 后先 LayerNorm 再进 MLP（默认无，验证是否有增益）
         self.norm_concat = norm_concat
         self.norm = nn.LayerNorm(in_dim) if norm_concat else nn.Identity()

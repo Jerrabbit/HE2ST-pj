@@ -14,7 +14,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from common.models.mlp_head import MLPHead
+from common.models.mlp_head import MLPHead, RefMLPHead
 
 FEATURE_DIM = 1536  # UNI2 [CLS] token 维度
 
@@ -103,4 +103,26 @@ class UNI2MLPImproved(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """输入 (B, 1536) UNI2 特征 → 输出 (B, num_genes) 归一化表达预测。"""
+        return self.head(x)
+
+
+class UNI2MLPRef(nn.Module):
+    """UNI2+MLP **参考架构版**（methods/uni2_mlp/MLP架构参考.txt，已验证更好性能）。
+
+    改进：①特征提取加 LayerNorm（CLS/中心 token 各做 LN，见 extract 的 layer_norm）；
+         ②MLP 头 = RefMLPHead（LayerNorm→512→GELU→Dropout→313→Softplus）。
+    **Softplus 输出恒正 → 训练/评测用 gene_norm=log1p（正数目标空间）**。
+    """
+
+    input_type = "feature"
+
+    def __init__(self, num_genes: int, hidden_dim: int = 512, dropout: float = 0.1,
+                 use_softplus: bool = True):
+        super().__init__()
+        self.num_genes = int(num_genes)
+        self.head = RefMLPHead(FEATURE_DIM, hidden_dim, self.num_genes, dropout,
+                               use_softplus)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """输入 (B, 1536) UNI2 特征 → 输出 (B, num_genes) 表达预测（恒正若 Softplus）。"""
         return self.head(x)

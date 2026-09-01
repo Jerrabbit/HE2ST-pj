@@ -98,6 +98,9 @@ def main() -> None:
     p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--workers", type=int, default=4, help="crop+resize 并行进程数（fork）")
     p.add_argument("--max_cells", type=int, default=None, help="调试：限制细胞数")
+    p.add_argument("--layernorm", action="store_true",
+                   help="特征提取加 LayerNorm（参考 img_feature_extractor：CLS 与中心 patch "
+                        "token 各做 LayerNorm(1536, eps=1e-6)）")
     args = p.parse_args()
 
     data_dir = args.data_dir or os.path.expanduser(f"~/HE2ST-pj/data/rep{args.rep}")
@@ -111,7 +114,8 @@ def main() -> None:
     print(f"[LG] 图像 {image.shape}", flush=True)
 
     from common.features.uni2 import UNI2FeatureExtractor
-    extractor = UNI2FeatureExtractor(args.ckpt, device=args.device)
+    extractor = UNI2FeatureExtractor(args.ckpt, device=args.device,
+                                     layer_norm=args.layernorm)
 
     # fork 前设置全局（子进程继承，避免 pickle 2GB 图）
     global _IMG, _CTR, _L1

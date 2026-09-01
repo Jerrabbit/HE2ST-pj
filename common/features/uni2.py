@@ -26,7 +26,7 @@ class UNI2FeatureExtractor:
         device: 'cuda' 或 'cpu'
     """
 
-    def __init__(self, weight_path: str, device: str = "cuda"):
+    def __init__(self, weight_path: str, device: str = "cuda", layer_norm: bool = False):
         import timm
         from timm.layers import SwiGLUPacked
 
@@ -52,6 +52,10 @@ class UNI2FeatureExtractor:
             raise RuntimeError(f"UNI2 权重加载不完整: missing={missing}, unexpected={unexpected}")
         self.model = model.eval().to(device)
         self.n_prefix = int(getattr(model, "num_prefix_tokens", 1))  # CLS + register 前缀 token 数
+        # 特征提取 LayerNorm（methods/uni2_mlp/特征提取layernorm参考.txt）：
+        # 对 CLS 与 patch token 各自做 LayerNorm(1536, eps=1e-6)。新建层（weight=1/bias=0，
+        # 非训练）→ 相当于对每个 token 特征向量做固定标准化（mean=0, std=1）。
+        self.ln = nn.LayerNorm(1536, eps=1e-6).to(device) if layer_norm else None
 
     @torch.no_grad()
     def extract(self, patches: np.ndarray, batch_size: int = 256) -> np.ndarray:
@@ -67,7 +71,10 @@ class UNI2FeatureExtractor:
         for i in range(0, len(patches), batch_size):
             batch = patches[i:i + batch_size]
             x = self._preprocess(batch)
-            feats.append(self.model(x).cpu().numpy())
+            f = self.model(x)
+            if self.ln is not None:
+                f = self.ln(f)
+            feats.append(f.cpu().numpy())
         return np.concatenate(feats, axis=0)
 
     @torch.no_grad()
@@ -88,7 +95,10 @@ class UNI2FeatureExtractor:
         feats = []
         for i in range(0, len(patches), batch_size):
             x = self._preprocess(patches[i:i + batch_size])
-            feats.append(self.model.forward_features(x).cpu().numpy())
+            f = self.model.forward_features(x)
+            if self.ln is not None:
+                f = self.ln(f)   # 对每个 token（CLS/reg/patch）独立 LayerNorm
+            feats.append(f.cpu().numpy())
         return np.concatenate(feats, axis=0)
 
     def center_patch_tokens(self, tokens: np.ndarray, k: int) -> np.ndarray:

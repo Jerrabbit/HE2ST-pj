@@ -13,9 +13,9 @@ import torch
 
 from common.benchmark.harness import fit
 from .local_global import FEATURE_DIM, LocalGlobalMLP
-from .model import UNI2MLP, UNI2MLPImproved
+from .model import UNI2MLP, UNI2MLPImproved, UNI2MLPRef
 
-__all__ = ["UNI2MLP", "UNI2MLPImproved", "LocalGlobalMLP", "FEATURE_DIM"]
+__all__ = ["UNI2MLP", "UNI2MLPImproved", "UNI2MLPRef", "LocalGlobalMLP", "FEATURE_DIM"]
 
 
 def build_model(num_genes: int = 313, variant: str = "baseline",
@@ -27,12 +27,17 @@ def build_model(num_genes: int = 313, variant: str = "baseline",
     """
     if variant == "improved":
         return UNI2MLPImproved(num_genes=num_genes, **kwargs)
-    if variant in ("local_global", "global_only", "local_only", "local_global_ln"):
+    if variant == "ref":
+        return UNI2MLPRef(num_genes=num_genes, **kwargs)
+    if variant in ("local_global", "global_only", "local_only", "local_global_ln",
+                   "local_global_ref"):
         n_files = {"local_global": 2, "global_only": 1, "local_only": 1,
-                   "local_global_ln": 2}[variant]
+                   "local_global_ln": 2, "local_global_ref": 2}[variant]
         dim = in_dim or FEATURE_DIM * n_files
         return LocalGlobalMLP(num_genes=num_genes, in_dim=dim, l1=l1, l2=l2,
-                              norm_concat=(variant == "local_global_ln"), **kwargs)
+                              norm_concat=(variant == "local_global_ln"),
+                              head_variant=("ref" if variant == "local_global_ref"
+                                            else "standard"), **kwargs)
     return UNI2MLP(num_genes=num_genes, **kwargs)
 
 
