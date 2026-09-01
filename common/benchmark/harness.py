@@ -173,6 +173,7 @@ def compute_metrics_vectorized(
     details: bool = False,
     coords: np.ndarray | None = None,
     ssim_grid: int = 224,
+    gene_idx: np.ndarray | None = None,
 ) -> dict:
     """与逐基因/逐细胞循环完全等价的向量化指标计算（大切片评估大幅加速）。
 
@@ -196,6 +197,15 @@ def compute_metrics_vectorized(
         topk_ks = topk_ks_default
 
     N, G = y_true_norm.shape
+    if gene_idx is not None:
+        # 只对指定基因子集（如 zero-shot：模型基因 panel ∩ 数据集 313 基因）计算全部指标，
+        # 其余基因（填 0 的部分）不参与评测。
+        gi = np.asarray(gene_idx, dtype=int)
+        y_true_norm = y_true_norm[:, gi]
+        y_pred = y_pred[:, gi]
+        y_true_raw = y_true_raw[:, gi]
+        y_pred_raw = y_pred_raw[:, gi]
+        N, G = y_true_norm.shape
     with np.errstate(divide="ignore", invalid="ignore"):
         # PCC：逐基因 Pearson
         Xc = y_true_norm - y_true_norm.mean(0, keepdims=True)
