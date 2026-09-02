@@ -46,6 +46,8 @@ def parse_args() -> argparse.Namespace:
                    help="DeepPT 特征维度（默认 1536=UNI2；ResNet50 忠实版用 2048）")
     p.add_argument("--variant", default=None,
                    help="方法专属变体（如 pixel2gene cell/spot）")
+    p.add_argument("--no_softplus", action="store_true",
+                   help="uni2_mlp ref 变体：不用 Softplus 输出（可配 log1p_zscore 目标空间）")
     p.add_argument("--d_model", type=int, default=None,
                    help="Phoenix 专属：流 transformer 隐藏维度（默认 512）")
     p.add_argument("--n_layers", type=int, default=None,
@@ -122,6 +124,8 @@ def main() -> None:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method in ("pixel2gene", "uni2_mlp", "squall") and args.variant:
         build_kwargs["variant"] = args.variant
+    if args.method == "uni2_mlp" and args.no_softplus:
+        build_kwargs["use_softplus"] = False
     if args.method == "deeppt" and args.feat_dim:
         build_kwargs["feat_dim"] = args.feat_dim
     if args.method == "stflow":

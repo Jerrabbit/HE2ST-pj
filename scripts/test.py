@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
                    help="BLEEP 等专属：backbone 预训练权重路径（远程无网时替代 timm HF 下载）")
     p.add_argument("--variant", default=None,
                    help="方法专属变体（如 pixel2gene cell/spot）")
+    p.add_argument("--no_softplus", action="store_true",
+                   help="uni2_mlp ref 变体：不用 Softplus 输出（与训练一致）")
     p.add_argument("--d_model", type=int, default=None,
                    help="Phoenix 专属：流 transformer 隐藏维度（默认 512）")
     p.add_argument("--n_layers", type=int, default=None,
@@ -67,6 +69,8 @@ def main() -> None:
         build_kwargs["pretrained_weights"] = args.pretrained_weights
     if args.method in ("pixel2gene", "uni2_mlp", "squall") and args.variant:
         build_kwargs["variant"] = args.variant
+    if args.method == "uni2_mlp" and args.no_softplus:
+        build_kwargs["use_softplus"] = False
     if args.method == "phoenix":
         if cfg.get("d_model") or args.d_model:
             build_kwargs["d_model"] = cfg.get("d_model") or args.d_model
