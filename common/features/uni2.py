@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
@@ -100,6 +101,56 @@ class UNI2FeatureExtractor:
                 f = self.ln(f)   # 对每个 token（CLS/reg/patch）独立 LayerNorm
             feats.append(f.cpu().numpy())
         return np.concatenate(feats, axis=0)
+
+    @torch.no_grad()
+    def extract_reference(self, patches: np.ndarray, center_ratios: list[float] | None = None,
+                          batch_size: int = 128, layer_norm: bool = True):
+        """**忠实复刻** img_feature_extractor 参考实现（forward_intermediates 路径）。
+
+        与 extract/extract_tokens 的区别：Local 特征取 **intermediates[-1]**（最后一层中间
+        输出的 NCHW 空间 patch 特征图，final LayerNorm 之前）的中心裁剪（参考 center 公式），
+        而非 forward_features 的 final-norm 后 token。Global = feature_emb[:,0]（CLS，
+        实测与 forward_features 完全一致）。
+
+        参数：
+            patches: (B,H,W,3) uint8 或 (B,3,224,224)
+            center_ratios: 中心裁剪比例列表（0.25 ↔ l2=56 ↔ 16×16 网格中心 4×4）。
+                可给多个 → 一次 forward 复用 intermediates 产出多个 l2 的 Local 特征。
+            layer_norm: 对 CLS 与每个 patch token 做 LayerNorm(1536, eps=1e-6)
+        返回：
+            (g (B,1536), {ratio: l (B,1536)})：g=Global CLS；每个 ratio 一个 Local mean-pool。
+        """
+        import torch.nn as nn
+
+        ln = nn.LayerNorm(1536, eps=1e-6).to(self.device) if layer_norm else None
+        g_all = []
+        l_all = {r: [] for r in (center_ratios or [0.25])}
+        for i in range(0, len(patches), batch_size):
+            x = self._preprocess(patches[i:i + batch_size])
+            feature_emb, intermediates = self.model.forward_intermediates(
+                x, return_prefix_tokens=False)
+            patch_emb = intermediates[-1]                     # (B, C, H, W)
+            B, C, Hp, Wp = patch_emb.shape
+            center = feature_emb[:, 0] if feature_emb.ndim == 3 else feature_emb  # (B,C) CLS
+            if ln is not None:
+                center = ln(center)
+            for ratio in l_all:
+                # 参考的 center 裁剪公式（与 img_feature_extractor 逐行一致）
+                cs_h = max(1, round(Hp * ratio)); cs_w = max(1, round(Wp * ratio))
+                ch, cw = (Hp - 1) // 2, (Wp - 1) // 2
+                hl, hh = cs_h // 2, cs_h - cs_h // 2
+                wl, wh = cs_w // 2, cs_w - cs_w // 2
+                hs, he = int(max(ch - hl, 0)), int(min(ch + hh, Hp))
+                ws, we = int(max(cw - wl, 0)), int(min(cw + wh, Wp))
+                pf = patch_emb[:, :, hs:he, ws:we]           # (B, C, h, w)
+                pf = pf.permute(0, 2, 3, 1).reshape(B, -1, C)  # (B, h*w, C)
+                if ln is not None:
+                    pf = ln(pf)
+                l_all[ratio].append(pf.mean(1).cpu().numpy())  # (B, C)
+            g_all.append(center.cpu().numpy())
+        g = np.concatenate(g_all, axis=0)
+        loc = {r: np.concatenate(v, axis=0) for r, v in l_all.items()}
+        return g, loc
 
     def center_patch_tokens(self, tokens: np.ndarray, k: int) -> np.ndarray:
         """从全 token 序列提取中心 k×k patch token 块（复用同一次 forward）。
