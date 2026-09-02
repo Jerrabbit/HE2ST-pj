@@ -143,6 +143,46 @@ token 已携带全局上下文）。全部增益来自**特征表示**（追加 
 4. **跨癌种验证**：结直肠 / 肺 / 卵巢训练 → 乳腺癌测试。
 5. 同步更新 README/CLAUDE.md 与 GitHub。
 
+## UNI2+MLP 改进探索：参考方案（img_feature_extractor + RefMLPHead）验证（2026-09-02）
+
+按用户提供的参考实现（`methods/uni2_mlp/` 下 `MLP架构参考.txt` / `特征提取layernorm参考.txt` /
+`img_feature_extractor特征提取参考.py`，声称已验证更好性能），对 UNI2+MLP 做了忠实复刻与系统验证。
+
+**参考方案要点**：
+- 特征提取：`forward_intermediates` 取 `feature_emb[:,0]`（CLS）+ `intermediates[-1]`
+  （最后一层中间 NCHW patch 特征图，**final LayerNorm 之前**）中心裁剪（center_ratio）+ LayerNorm。
+- MLP：`RefMLPHead` = LayerNorm → Linear512 → GELU → Dropout → Linear313 → Softplus
+  （**Softplus 输出恒正 → 需 log1p 目标**）。
+
+**忠实性核对（探针实测）**：
+- `feature_emb[:,0]` == `forward_features[:,0]`（**CLS 完全相同**，diff=0）→ 基线 Global 特征无差异。
+- `intermediates[-1]` 的 patch token ≠ `forward_features` 的 patch token（diff≈541）→ **Local 特征来源不同**。
+- `forward_intermediates` 默认计算全部 24 层中间（慢 ~60×）；用 `indices=[-1]` 只算末层（结果逐字节一致）。
+
+**系统对比结果**（rep1→rep2 未过滤）：
+
+基线：
+
+| 版本 | MLP | 特征 | PCC |
+|---|---|---|---|
+| 基线（原）| MLPHead（3层+BN）| forward CLS + log1p_zscore | **0.3240** |
+| 基线+LN 特征 | MLPHead | LN CLS + log1p_zscore | 0.3234 |
+| 基线 ref（Softplus）| RefMLPHead | LN CLS + log1p | 0.3160 |
+| 基线 ref（无 Softplus）| RefMLPHead | LN CLS + log1p_zscore | 0.3198 |
+
+LG（l1=112）：
+
+| 版本 | MLP | Local 特征 | PCC |
+|---|---|---|---|
+| LG 原版 | MLPHead | forward_features 中心 token | **0.3712** |
+| LG 忠实（标准 MLP）| MLPHead | intermediates[-1]（best l2=42）| 0.3682 |
+| LG 忠实 ref（Softplus）| RefMLPHead | intermediates[-1]（l2=56）+ log1p | 0.3572 |
+| LG ref MLP + 忠实 l2 sweep | RefMLPHead | intermediates[-1] + log1p | ⏳ 待出（l2 sweep）|
+
+**结论（初步）**：参考方案整体不迁移——① **特征提取**（intermediates[-1] pre-norm）不比原
+forward_features（final-norm）；② **MLP**（RefMLPHead 2层+仅输入 LN）恒差于原 MLPHead
+（3层+每层 BatchNorm）约 0.01。**原 LG（0.3712）仍是最优**，冲 PCC ~0.4 需其他方向改进。
+
 ## 目录结构
 
 ```
