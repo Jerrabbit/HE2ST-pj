@@ -199,6 +199,27 @@ forward_features（final-norm）；② **MLP**（RefMLPHead 2层+仅输入 LN）
 SQUALL 需训练解码器/MLP 头）。**20k 与先前 5k 结果一致**（Phoenix −0.0019→−0.0009、
 SQUALL 0.0115→0.0133，均 PCC≈0、AUROC≈0.5）——更大测试子集下稳健确认不迁移。
 
+## 官方权重"就地微调"（保留官方输出维度，2026-09-03，进行中）
+
+zero-shot 不迁移 → 尝试**不改架构/输出维度**的就地微调：SQUALL 仍输出 15757、
+Phoenix 仍输出 280（官方面板），只在能映射到本仓库 313 面板的**交集基因**上给监督，
+其余输出通道/位置无目标（评测时视为 0 / 忽略）。
+
+> ⚠️ **评测只对交集基因计算**（SQUALL 264 / Phoenix 280），**非全 313** —— 与 zero-shot
+> 的 gene_idx 约定一致，可直接与 zero-shot 数值对比，但**不与该基准表（313 全基因）并排**。
+
+| 方法 | 做法 | 与之前"自建头/313 重接线"的差异 | 状态 |
+|---|---|---|---|
+| **SQUALL**（`scripts/squall_decoder_inplace_finetune.py`） | 冻结 encoder（预提取 token `X_squall_tokens.npy`）→ 微调官方 `decoder_rgb`+`increase_dim_rgb`，输出 15757 不变，fc2 只取 264 交集通道行；loss 只作用于此 264 | 之前 SQUALLModel/SQUALLDecoderHead 是**换自建 313 头**（输出改 313、不用官方 decoder 权重）；本脚本第一次**就地训练官方 15757 解码器** | ⏳ 待跑 |
+| **Phoenix**（`scripts/phoenix_official280_finetune.py`） | DINOv2 冻结 + flow 训练（官方 init），`num_genes=280` 官方面板保留，训练目标 = rep1 中**按基因名匹配**到官方位置的那一列 | 之前微调把位置 0..312 重接线到我们 313 列序（输出 313）；本脚本保持 280 位置、只训 280 个全覆盖交集基因 | ⏳ 待跑 |
+
+两脚本均为 `train` / `test` 两子命令（rep1 训练、rep2 子集验证早停、rep2 全量测试），
+目标空间 log1p_zscore（统计量只在训练集拟合）。SQUALL 省显存写法：保持官方运算顺序
+（对 `relu(fc1)` 上采样出的 3136 栅格 cell 先过 **fc2 子集(264)** 再均值，与官方
+(B,56,56,15757)→mean 在所选通道**逐位一致**，实测 maxdiff≈9e-10，只物化 264 列；
+"先均值再过 fc2"虽数学等价但 fp32 会引入 ~1e-2 舍入差，已弃用）。结果出来后补入本表并
+与 zero-shot（−0.0009 / 0.0133）对比。
+
 ## 目录结构
 
 ```
