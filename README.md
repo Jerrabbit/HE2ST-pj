@@ -532,10 +532,14 @@ xformers `SwiGLU` + `flash_attn_func`；flow_simple 纯 torch 等价）。两者
   README 的 vision 冻结一致；目标空间 log1p_zscore = 官方 z-scored log1p 语义。
 
 **问题清单**：
-- [高] 零样本基因列顺序风险：`scripts/test_phoenix_zero_shot.py` 用 `xenium_human_breast.npy`
-  （280 基因）按**基因名**映射到 flow 的**token 位置索引**——若该 npy 顺序 ≠ `flow_model.pth`
-  训练面板顺序，则列错位，零样本 PCC≈0 的结论可能部分受此影响。**需人工确认**该 npy 是否为
-  有序训练面板。
+- [高→✅已核实] 零样本基因列顺序风险：`scripts/test_phoenix_zero_shot.py` 用
+  `xenium_human_breast.npy`（280 基因）按**基因名**映射到 flow 的**token 位置索引**——若该
+  npy 顺序 ≠ `flow_model.pth` 训练面板顺序，则列错位。**2026-09-03 已验证顺序相符**：把
+  rep1 逐基因 log1p 均值按该 npy 顺序排列，与官方 `nest_breast_stats_table.npz`（280 行 =
+  flow px 位置序的反归一化统计量）Pearson **0.844**；20 次随机置乱对照 corr∈[−0.135, +0.119]
+  （均值 ~0）→ 远在噪声外。官方即按"panel npy + stats_table + model"三件套配对发布、推理
+  按 `len(gene_list)` 定噪声宽 + `px=arange(len)` ⇒ **flow 位置 p = `xenium_human_breast[p]`**，
+  零样本与 280 就地微调（slot p 训练基因 names[p]）的"保留官方身份"成立。
 - [中] 采样偏离：固定步 Euler（零样本 50 / 验证 5）vs 官方 zuko 自适应 ODE——数值近似，
   非逐位一致。
 - [中] 缓存 DINOv2 token 用 fp16（官方实时 fp32），1536 维特征小幅精度损失。
