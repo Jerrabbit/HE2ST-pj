@@ -124,23 +124,33 @@ def main() -> None:
 
     # 覆盖基因子集上的真值
     valid_cols = [i for i, g in enumerate(gene_names) if g in covered]
+    covered_names = [gene_names[i] for i in valid_cols]
     y_true = expr_raw[:, valid_cols]
+    coords = meta[["x_centroid", "y_centroid"]].to_numpy(float)
 
     # 解释 A：解码器输出即 raw counts 语义
-    resA = compute_metrics_vectorized(y_true, preds, y_true, preds)
+    resA = compute_metrics_vectorized(y_true, preds, y_true, preds,
+                                      topk_ks="full", details=True, coords=coords)
     # 解释 B：解码器输出为 log1p → expm1 回 raw
     preds_log = np.expm1(np.clip(preds, -30, 30)).astype(np.float32)
-    resB = compute_metrics_vectorized(y_true, preds_log, y_true, preds_log)
+    resB = compute_metrics_vectorized(y_true, preds_log, y_true, preds_log,
+                                      topk_ks="full", details=True, coords=coords)
     print(f"[SQUALL-decoder] 解释A(输出=raw): PCC={resA['PCC']:.4f} | "
           f"解释B(输出=log1p→raw): PCC={resB['PCC']:.4f}", flush=True)
 
+    os.makedirs(args.output_dir, exist_ok=True)
     out = {"n_cells": n, "covered_genes": len(covered),
-           "as_raw": resA, "as_log1p": resB,
+           "as_raw": {k: v for k, v in resA.items() if isinstance(v, (int, float))},
+           "as_log1p": {k: v for k, v in resB.items() if isinstance(v, (int, float))},
            "output_range": [float(preds.min()), float(preds.max())],
            "nonneg_frac": float((preds >= 0).mean())}
     with open(os.path.join(args.output_dir, "test_results.json"), "w") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    print(json.dumps(out, ensure_ascii=False, indent=2), flush=True)
+    # 保存标准 CSV（取解释 B=log1p→raw 的语义，与其它方法 log1p 目标一致；基因 CSV 为覆盖子集）
+    from common.benchmark.harness import save_eval_results_csv, scalar_results
+    save_eval_results_csv(os.path.join(args.output_dir, "eval_metrics.csv"),
+                          resB, gene_names=covered_names)
+    print(json.dumps(scalar_results(resB), ensure_ascii=False, indent=2), flush=True)
 
 
 if __name__ == "__main__":

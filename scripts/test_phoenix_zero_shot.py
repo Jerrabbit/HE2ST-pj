@@ -1,14 +1,11 @@
-"""⚠️ DEPRECATED（2026-08-27 用户决定：Phoenix 不做零样本，只做微调）。
-
-Phoenix 官方权重**零样本**评估：Rep2 直接推理（不使用 Rep1）。
-保留本脚本仅作参考，不参与实验流程。微调实验入口见 train/test_phoenix_finetune.py。
+"""Phoenix 官方权重**零样本**评估（2026-09-03 重启，用于交集基因评测）。
 
 流程：Rep2 256×256 patch → resize 224（bicubic）+ 官方 tissue 归一化
-→ DINOv2 ViT-Giant 提 256 patch token → flow ODE 采样
-→ 官方 stats 反归一化（clip*std+mean = log1p 空间）→ expm1 → raw counts
-→ 映射公共基因（xenium_human_breast ↔ 本仓库 313）→ 统一指标（raw 语义）。
+→ DINOv2 ViT-Giant 提 token → flow ODE 采样 → 官方 stats 反归一化（log1p）→ raw counts
+→ 只对**与官方基因面板的交集基因**（xenium_human_breast 280 ⊂ 本仓库 313）计算指标
+（gene_idx），其余基因填 0 不参与评测；含 SSIM（坐标栅格化）与全 Top-k 曲线。
 
-用法（远程 myenv1，仅参考）：
+用法（远程 myenv1）：
     python scripts/test_phoenix_zero_shot.py --test_dir data/rep2 \
         --output_dir outputs/bench_phoenix_zero_shot
 """
@@ -119,9 +116,12 @@ def main() -> None:
     expr = np.load(os.path.join(args.test_dir, "gene_expression.npy"))
     true_raw = expr[: len(meta)].astype(np.float32)
 
-    # 统一指标（raw 语义，同冻结 Path2Space：未覆盖基因常量 → PCC nan 跳过）
-    results = compute_metrics_vectorized(true_raw, pred, true_raw, pred, details=True)
-    results["_gene_names"] = our_genes
+    # 统一指标：**只对交集基因(out_cols)计算**（gene_idx），含 SSIM（坐标栅格化）与全 Top-k
+    coords = meta[["x_centroid", "y_centroid"]].to_numpy(float)
+    results = compute_metrics_vectorized(true_raw, pred, true_raw, pred,
+                                         topk_ks="full", details=True, coords=coords,
+                                         gene_idx=out_cols)
+    results["_gene_names"] = [our_genes[c] for c in out_cols]  # 只含覆盖(交集)基因
     results["covered_genes"] = len(covered)
     json_results = {k: v for k, v in results.items()
                     if not k.startswith("_") and not isinstance(v, list)
@@ -130,7 +130,7 @@ def main() -> None:
     with open(os.path.join(args.output_dir, "test_results.json"), "w") as f:
         json.dump(json_results, f, ensure_ascii=False, indent=2)
     csv_files = save_eval_results_csv(os.path.join(args.output_dir, "eval_metrics.csv"),
-                                      results, gene_names=our_genes)
+                                      results, gene_names=results["_gene_names"])
     print(json.dumps(json_results, ensure_ascii=False, indent=2))
     print(f"CSV: {csv_files['summary']} / {csv_files['genes']}")
 
