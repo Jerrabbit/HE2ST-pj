@@ -7,6 +7,99 @@
 2. Local（局部组织形态）与 Global（组织上下文）信息是否互补？如何简单利用两者？
 3. 如何建立覆盖不同泛化场景的标准 Benchmark，公平比较现有方法？
 
+## UNI2+MLP 与 Local+Global 实现全流程（供实现比对的环节级说明，2026-09-04）
+
+> 面向同学比对的逐环节实现说明：数据/细胞集 → 图像块与特征 → MLP → 训练/评测 →
+> Local+Global 两步调参 → 参考方案（同学代码）验证。数值均可复现，代码文件均已列出。
+
+### 0. 关键代码文件
+
+| 环节 | 文件 |
+|---|---|
+| 图像→patch 提取（基线 256 块） | `common/data/preprocess.py`、`scripts/preprocess_he.py`（`--patch_size` 默认 **256**） |
+| UNI2 特征（CLS / 全 token / 参考忠实） | `common/features/uni2.py`（`UNI2FeatureExtractor`：`extract` / `extract_tokens` / `center_patch_tokens` / `extract_reference`） |
+| Local+Global 特征提取 | `scripts/extract_local_global.py`（`--stage global|local`） |
+| 表达归一化 | `common/data/expression.py` `normalize_expression(..., "log1p_zscore")` |
+| 细胞过滤 / 空细胞构造 | `scripts/filter_cells.py`、`scripts/add_empty_cells.py` |
+| MLP 头（统一/参考） | `common/models/mlp_head.py`（`MLPHead` / `RefMLPHead`） |
+| 模型（基线/改进/参考/LG） | `methods/uni2_mlp/model.py`、`local_global.py`、`__init__.py`（`build_model` 变体） |
+| 训练 / 测试 / 调参 | `scripts/train.py`、`scripts/test.py`、`scripts/sweep.py`（底层 `common/benchmark/harness.py` 的 `fit` / `evaluate`） |
+| 同学参考材料（未入库） | `methods/uni2_mlp/MLP架构参考.txt`、`特征提取layernorm参考.txt`、`img_feature_extractor特征提取参考.py` |
+
+### 1. 数据与预处理
+
+- **数据**：10x Xenium **FFPE 人乳腺**（TENX191 公开），相邻两张切片 rep1 / rep2，H&E 为全片扫描。H&E 相对 Xenium 空间坐标是 **y 翻转** 的（注册 `image_row ≈ −2.749·y + 11313`，即约 **2.7488 px/µm**）；"以细胞为中心裁 patch"中的坐标即注册后 H&E 像素坐标（`metadata.csv` 的 `x_centroid/y_centroid`）。
+- **目标基因**：313 公共基因面板；表达以 **raw counts** 存（`gene_expression.npy`）。
+- **细胞集三类版本**（同一特征管线分别对每版提取/复用）：
+  - **rep1 / rep2（"未过滤"，本阶段基准用）**：上游 h5ad 阶段已剔除两类细胞——"不在 H&E 上"（rep2 有 6835 个、`y>4162µm` 落在 H&E 视野外；rep1 无）与"空细胞"（总转录本 `total<10`；rep1 剔 3780、rep2 剔 ~396）。故本仓库直接使用 **rep1=164,000、rep2=111,345** 作为"未过滤"集。
+  - **rep1_f / rep2_f（QC 过滤，早期阶段）**：`filter_cells.py --min_genes 40 --min_umis 100`（p10 取整）→ rep1_f=141,804 / rep2_f=97,646（保留 86.5%/87.7%）。特征是**按保留行切片复用**的，不是重提。
+  - **rep*_e（保留空细胞，空细胞消融用）**：`add_empty_cells.py` 把 h5ad 阶段被剔的空细胞（表达置 0）加回构造，用于实证"空细胞对 PCC 的影响"。
+- **表达归一化**：`log1p_zscore`，即对 raw counts 先 `log1p` 再逐基因 z-score；**mean/std 只在训练集拟合，验证/测试集复用**（防泄漏）。
+- **基线 patch**：每细胞取 **256×256 px 质心块 → 内部 bilinear resize 到 224×224** 再进 UNI2（与 Local/Global 分支"裁不同大小→resize 224"同一条前处理路径）。
+
+### 2. 特征提取（UNI2 冻结）
+
+- **编码器**：UNI2 = timm `vit_giant_patch14_224`（depth 24 / embed **1536** / heads 24 / SwiGLUPacked / **8 register token** / `no_embed_class` / dynamic img size），权重 strict 加载（0 missing），**全程冻结**；只接的 MLP 训练。patch14 无重叠 → 224×224 一次 forward 出 **16×16=256 patch token**。
+- **基线 Global 特征**：`extract()` 取 [CLS] → `X_uni2.npy`（N,1536）。
+- **LG Global（op1）**：以细胞为中心裁 **l1×l1** 块 → resize 224 → [CLS] → `X_uni2_g{l1}.npy`。
+- **LG Local（op2）＝中心 token 复用**：`extract_tokens()` 返回完整序列 **(B, 265, 1536)**（1 CLS + 8 reg + 256 patch，timm `_pos_embed` 顺序已核实）；`center_patch_tokens(k)` 切出网格**中心 k×k** patch token 子块（`start=(16−k)//2`，与像素级中心裁剪对齐），mean-pool 得 **1536 维 Local 特征** `X_uni2_l{l2}.npy`（**l2=14k**）。**关键：不做"裁剪→resize→再 forward"**——所有 l2（k=2..8 ⇔ l2=28..112）免费复用同一份 token，`--stage local --l2_list ...` 单次提取一次产出全部 l2 文件。
+- **参考忠实变体 `extract_reference`**（同学 img_feature_extractor 路径）：Global 取 `forward_intermediates` 的 `feature_emb[:,0]`（实测==`forward_features` CLS，diff=0）；Local 取 **`intermediates[-1]`**（末层中间 NCHW patch 特征图，**final LayerNorm 之前**）按参考 center 公式中心裁剪（ratio 0.25 ⇔ l2=56 ⇔ 4×4）后 LN。`forward_intermediates` 默认算 24 层很慢，用 `indices=[-1]` 只算末层（结果逐字节一致）。实测该 Local 来源 **≠** `forward_features` 的 patch token（diff≈541）。
+- **可选特征 LayerNorm**（`extract_local_global.py --layernorm`，来自 `特征提取layernorm参考.txt`）：对 CLS 与 patch/中心 token **各自**做 `LayerNorm(1536, eps=1e-6)`（新建层、非训练），再拼接/用。
+
+### 3. MLP 架构（统一 + 各变体）
+
+- **统一 MLPHead**（`common/models/mlp_head.py`，课题规则"接 MLP 的方法层数/架构必须相同"的唯一实现）：
+  `Linear(in→512)→BatchNorm1d→LeakyReLU(0.1)→Dropout(0.1)→Linear(512→256)→BatchNorm1d→LeakyReLU(0.1)→Dropout(0.1)→Linear(256→313)`
+  - 基线 `UNI2MLP`：in=1536（CLS）。
+  - LG `LocalGlobalMLP`：输入 **concat[Global, Local]=3072**，头仍是同一 `MLPHead`（512,256）。消融只用其一=1536。
+- **改进版 `UNI2MLPImproved`**（MLP 结构探索）：`Linear(1536→768)→SiLU→Dropout → ResidualBlock(768)×2 → Linear(768→313)`，末层 **bias 初始化为训练集平均表达**（ST-Net 技巧）。结果 ≈ 基线 → MLP 结构改进无收益（0.3248 ≈ 0.3245），结论"提升来自表示而非结构"。
+- **参考头 `RefMLPHead`**（`MLP架构参考.txt` active 版）：`LayerNorm(in)→Linear(in→512)→GELU→Dropout→Linear(512→313)→Softplus`。**Softplus 输出恒正 → 需正数目标空间 `log1p`**（不是 log1p_zscore）。另提供无 Softplus/无 LN 的注释版对照（`use_softplus=False`）。
+- 变体由 `build_model --variant` 统一分发：`baseline / improved / ref / local_global / global_only / local_only / local_global_ln / local_global_ref`（见 `methods/uni2_mlp/__init__.py`）。
+
+### 4. 训练与评测协议（与 12 方法统一）
+
+- 特征文件预提取 → `train.py`（FeatureDataset 按 `--feature_file` 相对各自 data_dir 取行）→ `harness.fit`：**AdamW lr=1e-3**（特例方法除外）、50 ep（LG 调参阶段 30 ep）取 **best val_PCC**、**patience=10** 早停；目标空间 `log1p_zscore`。
+- 评测 `harness.evaluate`/`compute_metrics_vectorized`：PCC（逐基因，归一化空间）、SPCC、**cell_PCC**（逐细胞跨基因，log1p(counts) 空间）、**SSIM**（坐标栅格化空间图，统一在 log1p(counts) 公共空间算，最长边 224）、**全 k=10..100 Top-k 曲线**、AUROC。
+- **编码器冻结 + 仅 MLP/头训练**为项目铁律；这里体现为"特征一次性预提取"。
+
+### 5. Local+Global 两步调参（未过滤 rep1→rep2 为主线，filtered 同步做过）
+
+1. **op1 sweep（只测 Global）**：l1 ∈ {448…28，步长 28}，逐 l1 提 `X_uni2_g{l1}` + 30 ep 取 best val_PCC 绘 PCC–l1 曲线。
+   - unfiltered：倒 U 型，峰值 **l1=112（0.3365）**（≈40.7 µm），比 l1=224 档（0.3290）与 256 基线更高；过大/过小均降。
+   - filtered：同峰值 l1=112（0.3510）。
+2. **op2 sweep（Global+Local，固定 best l1=112）**：l2 ∈ {28,42,56,70,84,98,112}（k=2..8），token 免费复用（零额外提取成本）。
+   - unfiltered：倒 U 型，**best l2=56（0.3727）**（中心 4×4 token mean），加入 Local 使 0.3365→0.3727（+0.036）。
+   - filtered：**best l2=42（0.3862）**（过滤后最优局部视野略小）。
+3. **最终 50 ep（best l1/l2）**：unfiltered l1=112+l2=56 → **PCC 0.3712**（SPCC 0.3071 / Top-10 0.539 / Top-50 0.588 / Top-100 0.630 / AUROC 0.759）；filtered l1=112+l2=42 → **PCC 0.3830**。vs 各自 UNI2+MLP 基线（0.3245 / 0.3364）均 **+0.047**。
+4. **消融（固定 best l1、l2）**：unfiltered：Global-only **0.3366**、Local+Global **0.3712**、**Local-only 0.3732**；filtered：Global-only 0.3479、Local+Global 0.3830、**Local-only 0.3827**。
+   → **Local 分支主导**：Local-only ≈ Local+Global，Global 的 CLS 几乎无增量。归因：单次 forward 设计使**中心 patch token 经自注意力已携带全局上下文**，与 CLS 高度冗余；Local 分支的价值主要在更精准的局部形态。
+5. **其它变体**：`local_global_ln`（concat 后先 LayerNorm）best val 0.3724 ≈ concat 版 0.3713，无提升 → 弃用。
+
+### 6. 参考方案（同学代码）的忠实复刻与"不迁移"结论
+
+按同学材料（`img_feature_extractor` + `RefMLPHead` + 特征 LN）逐环节复刻比对（详见"UNI2+MLP 改进探索：参考方案验证"节）：
+
+| 版本 | MLP | 特征 | PCC（unf，l1=112 时） |
+|---|---|---|---|
+| 基线（原） | MLPHead（3 层+BN） | forward CLS + log1p_zscore | **0.3240** |
+| 基线 + LN 特征 | MLPHead | LN CLS + log1p_zscore | 0.3234 |
+| 基线 ref（Softplus） | RefMLPHead | LN CLS + log1p | 0.3160 |
+| 基线 ref（无 Softplus） | RefMLPHead | LN CLS + log1p_zscore | 0.3198 |
+| LG 原版 | MLPHead | forward_features 中心 token（l2=56） | **0.3712** |
+| LG 忠实（标准 MLP） | MLPHead | intermediates[-1]（best l2=42） | 0.3682 |
+| LG 忠实 ref（Softplus） | RefMLPHead | intermediates[-1]（l2=56）+ log1p | 0.3572 |
+
+**结论（初步）**：参考方案整体不迁移——① 特征提取（`intermediates[-1]` pre-norm）不比原 `forward_features`（final-norm）；② MLP（RefMLPHead 2 层+仅输入 LN）恒差于原 MLPHead（3 层+逐层 BatchNorm）约 0.01。**原 LG（0.3712）仍最优**，冲 PCC ~0.4 需其它方向。
+
+### 7. 与同学的常见口径差异提示（比对时逐条确认）
+
+- 目标空间：我们 **log1p_zscore**（Softplus 类头才用纯 **log1p**）；同学 ref 默认 log1p。
+- 特征 LN：默认**不加**（我们的 LN 变体 0.3234/0.3682 均无增益）。
+- Local 来源：我们默认 **forward_features 的 final-norm patch token 中心块**；同学 ref 用 **intermediates[-1]（pre-norm）中心块**——两者不同（diff≈541）。
+- 中心裁剪对齐：像素 224 上裁 l2 与 token 网格中心 k×k（l2=14k）对齐，`start=(16−k)//2`。
+- 细胞过滤：我们主基准用"未过滤" rep1/rep2（仅上游去 H&E 外+空细胞）；QC 版 rep*_f 与空细胞版 rep*_e 另做对照。
+- 评测基因范围：PCC/SPCC/逐基因等用 313 全基因；zero-shot/就地微调类只对交集基因（已在相应 README 注明）。
+
 ## 项目汇报：方法与实验综述（2026-08-30）
 
 ### 1. Benchmark 的 12 种方法
