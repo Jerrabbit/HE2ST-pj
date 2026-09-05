@@ -87,10 +87,14 @@ def knn_adjacency(
 def build_hypergraph(coords: np.ndarray, k: int = 7, self_loop: bool = True) -> sparse.csr_matrix:
     """SpatialEx 风格空间超图 H（kNN 超边）。
 
-    超边 j = {细胞 j 及其 k 个近邻}，H[i,j]=1 当 i ∈ 超边 j。
-    返回 (N, N) CSR 稀疏超图关联矩阵（与官方 Build_hypergraph 语义一致）。
+    **k = 超边成员数（含自身 j）**——与官方 `Build_graph(knn, num_neighbors=k)`
+    （BallTree query k，返回含自身共 k 个）语义一致。即超边 j = {j + (k-1) 个最近邻}，
+    H[i,j]=1 当 i ∈ 超边 j。返回 (N, N) CSR 超图关联矩阵。
     """
-    A = knn_adjacency(coords, k=k, self_loop=self_loop)
+    # 官方 num_neighbors=k 的 k 个最近含自身 → 内部向 knn_adjacency 请求 k-1 个"其它邻居"，
+    # 由 knn_adjacency(self_loop=True) 补上自身共 k 个；避免此前多取 1 个（超边 k+1）。
+    n_k = (k - 1) if self_loop else k
+    A = knn_adjacency(coords, k=max(n_k, 0), self_loop=self_loop)
     # 官方：H = Build_graph(...).T；Build_graph 的 A[i,j]=1 当 j 是 i 的近邻，
     # 因此 H = A.T 的第 j 列 = {j 及其近邻} 即为超边 j。
     H = A.T.tocsr()
