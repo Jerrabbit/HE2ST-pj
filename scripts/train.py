@@ -70,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--img_size", type=int, default=0, help="patch 输入时 resize 到该尺寸（0=原图）")
     p.add_argument("--output_dir", default="outputs", help="模型与日志输出目录")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--seed", type=int, default=None, help="固定随机种子（python/numpy/torch，可复现）")
     p.add_argument("--debug", action="store_true", help="仅前 100 样本快速验证")
     return p.parse_args()
 
@@ -94,6 +95,16 @@ def _load_method(method_name: str, num_genes: int, **build_kwargs):
 
 def main() -> None:
     args = parse_args()
+
+    if args.seed is not None:  # 在构建模型/DataLoader 之前固定随机源
+        import random
+        import numpy as np
+        import torch
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        print(f"[seed] fixed seed = {args.seed}", flush=True)
 
     gene_list = None
     if args.gene_file:
