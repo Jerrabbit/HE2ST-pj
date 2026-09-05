@@ -150,11 +150,16 @@ class BLEEP(nn.Module):
 
     @torch.no_grad()
     def build_reference(self, expr: torch.Tensor) -> None:
-        """从参考集表达矩阵构建检索库（存入 self.reference，嵌入做 L2 归一化）。"""
-        spot_emb = self.spot_embed(expr.to(next(self.parameters()).device))
+        """从参考集表达矩阵构建检索库。
+
+        存两份嵌入：`spot_emb`（L2 归一化，用于 find_matches top-k 选择）与
+        `spot_emb_raw`（投影原值，用于官方 weighted_average 的 raw 空间距离加权）。
+        """
+        raw = self.spot_embed(expr.to(next(self.parameters()).device)).detach()
         self.reference = {
-            "spot_emb": F.normalize(spot_emb, dim=-1),  # (N, 256)
-            "spot_expr": expr.float(),                  # (N, G)
+            "spot_emb": F.normalize(raw, dim=-1),   # (N, 256) 归一化 → top-k 选择
+            "spot_emb_raw": raw.float(),            # (N, 256) raw → 加权距离
+            "spot_expr": expr.float(),              # (N, G)
         }
 
     # ---------- 推理侧（检索） ----------
@@ -173,14 +178,18 @@ class BLEEP(nn.Module):
             self._ref = {k: v.to(x.device) for k, v in self.reference.items()}
             self._ref_dev = x.device
         ref = self._ref
-        q = F.normalize(self.image_embed(x), dim=-1)                   # (B,256)
+        q_raw = self.image_embed(x)                                    # (B,256) raw 投影
+        q = F.normalize(q_raw, dim=-1)                                 # 归一化 → top-k
         sim = q @ ref["spot_emb"].T                                    # (B,N)
         top_k = min(self.top_k, sim.size(1))
         vals, idx = sim.topk(top_k, dim=-1)                            # (B,k)
         ref_expr = ref["spot_expr"]
         if self.ref_topk_weighted:
-            # 官方 weighted_average：d² = ||s-q||² = 2-2·sim（均已归一化）
-            dist_sq = 2.0 - 2.0 * vals
+            # 官方 weighted_average：top-k 由归一化点积选（find_matches），但权重用
+            # **raw 空间**欧氏距离 d = spot_emb_raw[sel] − query_raw（官方直接相减未归一化）。
+            r_raw = ref["spot_emb_raw"][idx]                           # (B,k,256)
+            d = r_raw - q_raw.unsqueeze(1)
+            dist_sq = (d * d).sum(dim=-1)                              # (B,k)
             w = torch.exp(-(dist_sq - dist_sq.min(dim=-1, keepdim=True).values + 1.0))
             w = w / w.sum(dim=-1, keepdim=True)
         else:

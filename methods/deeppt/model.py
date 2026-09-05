@@ -6,7 +6,8 @@
 
 本仓库适配（README 方案 A，单细胞粒度）：
     UNI2 特征(1536) → AE 编码器压缩到 512 → 官方 MLP_regression(512→512→G) 回归。
-    AE 用重构损失在训练集 UNI2 特征上预训练（与官方 12AE 相同），再与 head 联合训练。
+    AE 用重构损失在训练集 UNI2 特征上预训练（与官方 12AE 相同），**训后冻结**，头只在固定
+    压缩特征上训练（官方 features_compression 冻结语义；见 methods/deeppt/__init__.py）。
     **预测头沿用官方 model_MLP.py 的 MLP_regression**（Linear→Dropout→Linear，无激活），
     课题要求 6 的统一 MLP 仅用于"只产生 embedding 需外接头"的方法，DeepPT 自带头故沿用。
 """

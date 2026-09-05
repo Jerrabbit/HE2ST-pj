@@ -18,11 +18,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 
 import torch
 
-from common.benchmark.harness import evaluate
+from common.benchmark.harness import evaluate, fit
 from common.data.dataset import FeatureDataset
 from .model import Path2SpaceMLP, Path2SpaceModel
 
-__all__ = ["Path2SpaceModel", "Path2SpaceMLP", "build_model"]
+__all__ = ["Path2SpaceModel", "Path2SpaceMLP", "build_model", "train_function"]
 
 
 def build_model(num_genes: int = 313, variant: str = "train", feature_file=None, **kwargs):
@@ -39,6 +39,37 @@ def build_model(num_genes: int = 313, variant: str = "train", feature_file=None,
     if feature_file:
         model.feature_file = feature_file
     return model
+
+
+def train_function(model, train_loader, valid_loader, args, stats) -> dict:
+    """可训练版训练：官方 bias_init（输出层 bias=训练目标逐基因均值）后统一 fit。
+
+    对齐官方 `1main_regression.py` 的 bias 初始化技巧（z-score 目标下均值≈0，影响小，
+    仅为结构对齐）。
+    """
+    import torch
+
+    device = args.device
+    model = model.to(device)
+    total, n = None, 0
+    with torch.no_grad():
+        for batch in train_loader:
+            e = batch["gene_expr"].to(device)
+            total = e.sum(0) if total is None else total + e.sum(0)
+            n += e.size(0)
+    mean_expr = total / max(n, 1)
+    last = model.layer1[0]                 # layer1 = Sequential(Linear[, ReLU])；Linear 在 [0]
+    last.bias.data.copy_(mean_expr)
+    print("[Path2SpaceMLP] bias_init = 训练目标均值（官方 1main_regression）", flush=True)
+
+    return fit(
+        model, train_loader, valid_loader, args.epochs, args.lr, device,
+        out_dir=args.output_dir, weight_decay=args.weight_decay,
+        gene_norm=args.gene_norm, eval_stats=stats,
+        config={"method": "path2space", "num_genes": model.num_genes,
+                "gene_norm": args.gene_norm},
+        patience=args.patience,
+    )
 
 
 def evaluate_frozen(
