@@ -293,7 +293,7 @@ forward_features（final-norm）；② **MLP**（RefMLPHead 2层+仅输入 LN）
 SQUALL 需训练解码器/MLP 头）。**20k 与先前 5k 结果一致**（Phoenix −0.0019→−0.0009、
 SQUALL 0.0115→0.0133，均 PCC≈0、AUROC≈0.5）——更大测试子集下稳健确认不迁移。
 
-## 官方权重"就地微调"（保留官方输出维度，2026-09-03，进行中）
+## 官方权重"就地微调"（保留官方输出维度，2026-09-03/09-06）
 
 zero-shot 不迁移 → 尝试**不改架构/输出维度**的就地微调：SQUALL 仍输出 15757、
 Phoenix 仍输出 280（官方面板），只在能映射到本仓库 313 面板的**交集基因**上给监督，
@@ -305,7 +305,7 @@ Phoenix 仍输出 280（官方面板），只在能映射到本仓库 313 面板
 | 方法 | 做法 | 与之前"自建头/313 重接线"的差异 | 状态 |
 |---|---|---|---|
 | **SQUALL**（`scripts/squall_decoder_inplace_finetune.py`） | 冻结 encoder（预提取 token `X_squall_tokens.npy`）→ 微调官方 `decoder_rgb`+`increase_dim_rgb`，输出 15757 不变，fc2 只取 264 交集通道行；loss 只作用于此 264 | 之前 SQUALLModel/SQUALLDecoderHead 是**换自建 313 头**（输出改 313、不用官方 decoder 权重）；本脚本第一次**就地训练官方 15757 解码器** | ✅ **PCC 0.3521**（264 交集，rep2 全量 111k，早停 ep18 best val 0.3520） |
-| **Phoenix**（`scripts/phoenix_official280_finetune.py`） | DINOv2 冻结 + flow 训练（官方 init），`num_genes=280` 官方面板保留，训练目标 = rep1 中**按基因名匹配**到官方位置的那一列 | 之前微调把位置 0..312 重接线到我们 313 列序（输出 313）；本脚本保持 280 位置、只训 280 个全覆盖交集基因 | ⏳ 待跑 |
+| **Phoenix**（`scripts/phoenix_official280_finetune.py`） | DINOv2 冻结 + flow 训练（官方 init），`num_genes=280` 官方面板保留，训练目标 = rep1 中**按基因名匹配**到官方位置的那一列 | 之前微调把位置 0..312 重接线到我们 313 列序（输出 313）；本脚本保持 280 位置、只训 280 个全覆盖交集基因 | ✅ **PCC 0.2202**（280 交集，rep2 全量 111k，早停 ep22 best val 0.2209） |
 
 两脚本均为 `train` / `test` 两子命令（rep1 训练、rep2 子集验证早停、rep2 全量测试），
 目标空间 log1p_zscore（统计量只在训练集拟合）。SQUALL 省显存写法：保持官方运算顺序
@@ -318,7 +318,47 @@ val_PCC **0.3520**@ep8）；rep2 全量 111,345 cells 交集评测（264 基因�
 SPCC 0.306 / cell_PCC 0.686 / Top-50 0.579 / Top-100 0.556 / AUROC 0.752 / SSIM 0.456**。
 对比 zero-shot 0.0133 **+0.34**；且"保留官方 15757 解码器就地微调"显著强于官方解码器冻结
 （0.0133）——与自建 313 头（0.3281/0.2812，全 313 评测）方向一致但注意**评测基因集不同**
-（264 交集 vs 313 全），不能直接并排。**Phoenix 280 训练进行中**（结果待补）。
+（264 交集 vs 313 全），不能直接并排。
+
+**Phoenix 280 in-place 结果（✅ 2026-09-04）**：完整训练 rep1(164k)→rep2，早停 ep22
+（best val_PCC **0.2209**@ep12）；rep2 全量 111,345 cells 交集评测（280 基因）→ **PCC
+0.2202 / SPCC 0.173 / cell_PCC 0.541 / Top-50 0.486 / Top-100 0.488 / AUROC 0.621 /
+SSIM 0.328**。对比 zero-shot ≈0 **+0.22**。
+
+## Phoenix / SQUALL：zero-shot 与"保留官方输出维度"微调的实现 + 最终指标（2026-09-06）
+
+### 共同设定
+- 评测只对**交集基因**（Phoenix 280 ⊂ 313；SQUALL 264 ⊂ 313）；数据 rep1(164,000)→rep2(111,345)（未过滤）；目标空间 log1p_zscore（统计量仅训练集拟合）；编码器冻结、只训可训练部分。
+
+### Phoenix（官方 = DINOv2 ViT-Giant 冻结 + flow；基因身份 = px 位置索引，输出宽=用到的位置数）
+- **zero-shot**：官方 `flow_model.pth` 整体冻结，`num_genes=280`（官方面板顺序=px 位置序，已核实），ODE 采样直接预测：
+
+  | | PCC | AUROC | cell_PCC | SSIM |
+  |---|---|---|---|---|
+  | 5k | −0.0019 | 0.503 | 0.270 | 0.853 |
+  | **20k** | **−0.0009** | 0.502 | 0.274 | 0.713 |
+
+- **原架构微调（保留 280 官方面板）**：DINOv2 冻结（缓存 `X_phoenix_dino.npy`）；**整个 flow** 从官方 init 训练，目标 = rep1 中**按基因名**匹配到官方位置的那列（280 全覆盖）；流匹配 MSE(log1p_zscore)、AdamW lr=1e-4；**rep2 全量 test → PCC 0.2202 / SPCC 0.173 / cell_PCC 0.541 / Top-50 0.486 / Top-100 0.488 / AUROC 0.621 / SSIM 0.328**。
+
+### SQUALL（官方 = 冻结 555M encoder → token 196×1024 → decoder_rgb → increase_dim_rgb → 15757 通道；基因身份 = 通道号映射，交集 264）
+- **zero-shot**：官方模型整体冻结 `forward_rgb_to_expr` → 空间 mean → 按基因名取 264 通道：
+
+  | | PCC | AUROC | cell_PCC | SSIM |
+  |---|---|---|---|---|
+  | 5k | 0.0115 | 0.497 | 0.134 | — |
+  | **20k** | **0.0133** | 0.497 | 0.148 | 0.686 |
+
+- **原架构微调（保留 15757 输出，只监督 264）**：encoder 冻结（缓存 `X_squall_tokens.npy`）；**训练官方 decoder_rgb + increase_dim_rgb 的 fc1 + fc2 的 264 行**（其余行不动；对所选通道与原路径逐位一致，maxdiff≈9e-10）；MSE(log1p_zscore, 264)、AdamW lr=1e-4/wd=1e-2；**rep2 全量 test → PCC 0.3521 / SPCC 0.306 / cell_PCC 0.686 / Top-10 0.534 / Top-50 0.579 / Top-100 0.556 / AUROC 0.752 / SSIM 0.456**。
+
+### 对照与结论
+| 方法 | zero-shot(20k) | 原架构微调(rep2 全量) |
+|---|---|---|
+| **Phoenix**（280） | PCC ≈ 0（−0.0009） | **0.2202** |
+| **SQUALL**（264） | PCC 0.0133 | **0.3521** |
+
+**结论**：两个官方权重零样本在 per-cell 上均不迁移（PCC≈0、AUROC≈0.5）；**保留官方输出维度/官方面板的就地微调都学得起来**（SQUALL 0.352、Phoenix 0.220）——支持"冻结完整模型直接推理无效、需让可训练头按 per-cell 适配"；SQUALL 官方 15757 解码器就地微调（0.3521）还略高于自建 313 小头（0.3281，但后者为全 313 评测，口径不同）。
+
+脚本：`scripts/phoenix_official280_finetune.py`、`scripts/squall_decoder_inplace_finetune.py`（train/test）；zero-shot 见 `scripts/test_phoenix_zero_shot.py`、`scripts/test_squall_decoder.py`。
 
 ## 目录结构
 
