@@ -7,11 +7,12 @@
         cell_gene_matrix_filtered.csv  表达矩阵（行=细胞，列=基因）
         matched_nuclei_filtered.csv   id_histology ↔ id_xenium 匹配
 
-训练照官方：分割 CE + 细胞型 CE + 表达 MSE（+免疫/浸润 MSE）+ 组成 KLDiv。
+训练 = 表达 3×MSE（总/免疫/浸润）+ 分割 CE（核前景二值，用现有核 mask GT；官方
+comps_celltype 关闭时同样退化为 where(nuclei>0,1,0)）。细胞型 CE / 组成 KLDiv 等因
+无 cell-type GT（公共数据不含细胞型注释，celltype_filtered 全=1）未启用。
 评估：整片推理 → 逐核 out_expr → 对齐回细胞 → 统一指标（PCC/SPCC/Top-k/AUROC）。
 
-注意：我们 rep1/rep2 尚无核分割 mask，需先用官方 data_processing/ 生成
-（cellpose 或 Xenium 多边形 → he_image_nuclei_seg.tif），本模块代码已就绪。
+注意：核分割 mask 由 Xenium nucleus_boundaries 多边形生成（he_image_nuclei_seg.tif）。
 """
 from __future__ import annotations
 
@@ -210,7 +211,7 @@ def _serialize_stats(stats: dict | None) -> dict | None:
 
 
 def train_function(model, train_loader, valid_loader, args, stats) -> dict:
-    """GHIST 训练（官方 9 损失），val_PCC 早停。
+    """GHIST 训练（3×表达 MSE + 分割 CE[核前景二值]），val_PCC 早停。
 
     train_dir / valid_dir 需为 ghist_data 格式（含 he_image.tif / 核 mask）。
     """
@@ -236,6 +237,9 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     loss_expr = nn.MSELoss(reduction="mean")
     loss_expr_immune = nn.MSELoss(reduction="mean")
     loss_expr_invasive = nn.MSELoss(reduction="mean")
+    # 分割 CE（官方 loss_map，权重=1.0）：目标=核前景二值（用现有核 mask GT；
+    # 我们无 cell-type 标签，官方 comps_celltype 关闭时同样退化为 where(nuclei>0,1,0)）
+    loss_map = nn.CrossEntropyLoss(reduction="mean")
 
     best_pcc, best_state = -float("inf"), None
     no_improve = 0
@@ -269,9 +273,21 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
                              batch_expr=batch_expr, do_st_mlp=True)
             # 顺序与 out_expr 一致：batch_expr_pc = out[10]（各 patch 按 cids 顺序拼接）
             batch_expr_pc = out[10]
+            # 分割 CE：out[1]=out_map（Backbone 分割 logits），目标=核前景二值（现有 GT）。
+            # 空间尺寸若与输入 patch 不一致则把目标就近对齐到 out_map。
+            out_map = out[1]
+            loss_map_val = torch.tensor(0.0, device=device)
+            if out_map is not None:
+                seg_target = (nm > 0).to(torch.long)          # (B,H,W)
+                if out_map.shape[-2:] != seg_target.shape[-2:]:
+                    seg_target = F.interpolate(
+                        seg_target.unsqueeze(1).float(), size=out_map.shape[-2:],
+                        mode="nearest").long().squeeze(1)
+                loss_map_val = loss_map(out_map, seg_target)
             loss = loss_expr(out[3], batch_expr_pc) \
                 + loss_expr_immune(out[4], batch_expr_pc) \
-                + loss_expr_invasive(out[5], batch_expr_pc)
+                + loss_expr_invasive(out[5], batch_expr_pc) \
+                + loss_map_val
             loss.backward()
             optimizer.step()
             total_loss += loss.item()

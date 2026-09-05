@@ -15,7 +15,8 @@
     - 整片图方法（非 per-cell patch），无逐 batch forward(x)；
       数据管线读 data_dir 的 ghist_data 格式（he_image.tif + he_image_nuclei_seg.tif
       + cell_gene_matrix），train_function / evaluate_slide 见 __init__.py。
-    - 训练损失照官方：分割 CE + 细胞型 CE + 表达 MSE + 免疫/浸润 MSE + 组成 KLDiv。
+    - 训练损失：表达 3×MSE（总/免疫/浸润）+ 分割 CE（核前景二值，现有核 mask GT）。
+      细胞型 CE / 组成 KLDiv 因无 cell-type GT 未启用（见 methods/ghist/__init__.py）。
     - 评估走统一指标（PCC/SPCC/Top-k/AUROC），归一化空间与 harness 一致。
 """
 from __future__ import annotations
