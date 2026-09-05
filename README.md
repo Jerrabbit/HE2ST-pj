@@ -75,11 +75,17 @@ Global=CLS 与主线一致 → **l1 不重扫**（沿用主线 best l1=112），
 **(b) 忠实特征 + RefMLPHead（Softplus / log1p），l2=56 固定 — 最终 50ep 测试**（`run_lg_faithful.sh`）：
 **PCC 0.3572**（SPCC 0.3045 / cell_PCC 0.6908 / Top-50 0.5754 / AUROC 0.7511 / SSIM 0.4520）。
 
-**(c) 忠实特征 + RefMLPHead（Softplus / log1p）— op2 l2 sweep @ l1=112**（`run_lg_ref_op2.sh`，30 ep）：**未跑完**（仅 l2=28 部分，val≈0.334），结论待补，勿引用。
+**(c) 忠实特征 + RefMLPHead（Softplus / log1p）— op2 l2 sweep @ l1=112**（`run_lg_ref_op2.sh`，30 ep best val_PCC，2026-09-05 补跑完成）：
+
+| l2 | 28 | **42** | 56 | 70 | 84 | 98 |
+|---|---|---|---|---|---|---|
+| val_PCC | 0.3329 | **0.3608** | 0.3578 | 0.3595 | 0.3544 | 0.3532 |
+
+→ best **l2=42（0.3608）**（与忠实+标准 MLP 的最优 l2 一致）；仍低于忠实+标准 MLP（0.3682）与主线 LG（0.3712）。
 
 **对照锚**：主线 LG（`forward_features` 中心 token + MLPHead + log1p_zscore，l1=112/l2=56）= **0.3712**。
 
-**小结（初步）**：同一"忠实 Local"下，ref 头（Softplus/log1p）0.3572 < 标准 MLP 头（log1p_zscore）0.3682 < 主线 forward_features 中心 token 0.3712 → **参考特征/MLP 组合未迁移**（Local 来源、LN 位置、Softplus+log1p 三处都略差，方向一致）。
+**小结（初步）**：同一"忠实 Local"下，ref 头（Softplus/log1p）固定 l2=56 测试 0.3572、op2 调优后 best（l2=42）val 0.3608，均 < 标准 MLP 头（log1p_zscore）0.3682 < 主线 forward_features 中心 token 0.3712 → **参考特征/MLP 组合未迁移**（Local 来源、LN 位置、Softplus+log1p 三处都略差，方向一致）。
 
 ### 7. 空细胞（rep*_e）对照
 
@@ -265,7 +271,7 @@ LG（l1=112）：
 | LG 原版 | MLPHead | forward_features 中心 token | **0.3712** |
 | LG 忠实（标准 MLP）| MLPHead | intermediates[-1]（best l2=42）| 0.3682 |
 | LG 忠实 ref（Softplus）| RefMLPHead | intermediates[-1]（l2=56）+ log1p | 0.3572 |
-| LG ref MLP + 忠实 l2 sweep | RefMLPHead | intermediates[-1] + log1p | ⏳ 待出（l2 sweep）|
+| LG ref MLP + 忠实 l2 sweep | RefMLPHead | intermediates[-1] + log1p | ✅ best l2=42，val **0.3608**（2026-09-05 补跑）|
 
 **结论（初步）**：参考方案整体不迁移——① **特征提取**（intermediates[-1] pre-norm）不比原
 forward_features（final-norm）；② **MLP**（RefMLPHead 2层+仅输入 LN）恒差于原 MLPHead
