@@ -237,9 +237,12 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
     loss_expr = nn.MSELoss(reduction="mean")
     loss_expr_immune = nn.MSELoss(reduction="mean")
     loss_expr_invasive = nn.MSELoss(reduction="mean")
-    # 分割 CE（官方 loss_map，权重=1.0）：目标=核前景二值（用现有核 mask GT；
-    # 我们无 cell-type 标签，官方 comps_celltype 关闭时同样退化为 where(nuclei>0,1,0)）
+    # 分割 CE（官方 loss_map）：目标=核前景二值（现有核 mask GT；官方 comps_celltype 关闭时
+    # 同样退化为 where(nuclei>0,1,0)）。官方权重=1，但在我们二值且类别极不均衡（背景远多于核）、
+    # 且无 cell-type 监督下，权重 1 会主导梯度使表达头塌缩（实测 val_PCC=nan）→ 缩到 0.1。
     loss_map = nn.CrossEntropyLoss(reduction="mean")
+    seg_weight = 0.1
+    _dbg = [False]   # 只打印一次形状
 
     best_pcc, best_state = -float("inf"), None
     no_improve = 0
@@ -283,7 +286,12 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
                     seg_target = F.interpolate(
                         seg_target.unsqueeze(1).float(), size=out_map.shape[-2:],
                         mode="nearest").long().squeeze(1)
-                loss_map_val = loss_map(out_map, seg_target)
+                if not _dbg[0]:
+                    uc = torch.unique(seg_target).tolist()
+                    print(f"[GHIST] out_map{tuple(out_map.shape)} target{tuple(seg_target.shape)} "
+                          f"seg_target类={uc} seg_weight={seg_weight}", flush=True)
+                    _dbg[0] = True
+                loss_map_val = seg_weight * loss_map(out_map, seg_target)
             loss = loss_expr(out[3], batch_expr_pc) \
                 + loss_expr_immune(out[4], batch_expr_pc) \
                 + loss_expr_invasive(out[5], batch_expr_pc) \
