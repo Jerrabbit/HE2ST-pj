@@ -95,6 +95,7 @@ def main() -> None:
         model = RefMLPHead(in_dim, hidden_dim=512, output_dim=num_genes, use_softplus=True)
     else:
         model = MLPHead(in_dim, hidden_dims=(512, 256), output_dim=num_genes, dropout=0.1)
+    model.input_type = "feature"     # harness predict 按 input_type 取 batch["feature"]
     model.to(device)
     print(f"[cc] arch={args.arch} in_dim={in_dim} genes={num_genes} gene_norm={gene_norm} "
           f"train={len(tr_n)} test={len(te_n)}", flush=True)
