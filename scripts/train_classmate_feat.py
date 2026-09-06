@@ -37,7 +37,7 @@ from common.models.mlp_head import MLPHead, RefMLPHead
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--arch", choices=["mlp", "ref"], default="mlp")
+    p.add_argument("--arch", choices=["mlp", "ref", "bn2"], default="mlp")
     p.add_argument("--train_dir", required=True)
     p.add_argument("--test_dir", required=True)
     p.add_argument("--train_feat", required=True)
@@ -93,6 +93,15 @@ def main() -> None:
 
     if args.arch == "ref":
         model = RefMLPHead(in_dim, hidden_dim=512, output_dim=num_genes, use_softplus=True)
+    elif args.arch == "bn2":
+        # 参考 txt 注释版：Linear→256 → BN → LeakyReLU → Dropout → Linear(n_genes)，无 LN/Softplus
+        model = torch.nn.Sequential(
+            torch.nn.Linear(in_dim, 256),
+            torch.nn.BatchNorm1d(256),
+            torch.nn.LeakyReLU(),
+            torch.nn.Dropout(0.1),
+            torch.nn.Linear(256, num_genes),
+        )
     else:
         model = MLPHead(in_dim, hidden_dims=(512, 256), output_dim=num_genes, dropout=0.1)
     model.input_type = "feature"     # harness predict 按 input_type 取 batch["feature"]
