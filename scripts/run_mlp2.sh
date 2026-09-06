@@ -8,7 +8,8 @@ LOG=logs/mlp2.log
 say() { echo "[$(date -u '+%F %T')] $*" | tee -a "$LOG"; }
 
 run() { # name train_feat test_feat
-  local name=$1 tf=$2 vf=$3 D=outputs/bench_mlp2_$name
+  local name=$1 tf=$2 vf=$3
+  local D=outputs/bench_mlp2_$name
   if [ -f "$D/test_results.json" ]; then say "== $name 已有，跳过 =="; return; fi
   say "== $name (bn2) train+test =="
   python3 scripts/train_classmate_feat.py --arch bn2 \
