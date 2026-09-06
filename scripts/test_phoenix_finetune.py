@@ -60,26 +60,34 @@ def main() -> None:
                  for k, v in stats.items()}
 
     class TokenExprDS(Dataset):
-        """(DINOv2 缓存 token (261,1536) fp16 → fp32, gene_expr 归一化)。与训练一致。"""
+        """(DINOv2 缓存 token (261,1536) fp16 → fp32, gene_expr 归一化, 坐标)。与训练一致。"""
 
-        def __init__(self, tokens_path, expr_norm):
+        def __init__(self, tokens_path, expr_norm, coords):
             self.tokens = np.load(tokens_path, mmap_mode="r")   # (N, 261, 1536) fp16
             self.expr = expr_norm
-            assert len(self.tokens) == len(expr_norm), \
-                f"token {self.tokens.shape} vs expr {expr_norm.shape} 行数不匹配"
+            self.coords = coords
+            assert len(self.tokens) == len(expr_norm) == len(coords), \
+                f"token {self.tokens.shape} vs expr {expr_norm.shape} vs coords {coords.shape} 行数不匹配"
 
         def __len__(self):
             return len(self.expr)
 
         def __getitem__(self, i):
             return {"feature": torch.from_numpy(self.tokens[i].astype(np.float32).copy()),
-                    "gene_expr": torch.from_numpy(self.expr[i].copy())}
+                    "gene_expr": torch.from_numpy(self.expr[i].copy()),
+                    "coords": torch.from_numpy(self.coords[i].copy())}
 
     def _tok_path(dirname: str) -> str:
         if args.tokens_dir:
             return os.path.join(args.tokens_dir, os.path.basename(dirname),
                                 "X_phoenix_dino.npy")
         return os.path.join(dirname, "X_phoenix_dino.npy")
+
+    import pandas as pd
+    meta = pd.read_csv(os.path.join(args.test_dir, "metadata.csv"))
+    if args.max_cells:
+        meta = meta.iloc[: args.max_cells]
+    coords_all = meta[["x_centroid", "y_centroid"]].to_numpy(np.float32)
 
     expr_raw = np.load(os.path.join(args.test_dir, "gene_expression.npy"))
     if args.max_cells:
@@ -95,7 +103,7 @@ def main() -> None:
     if not os.path.exists(tok_path):
         raise SystemExit(f"缺少 DINOv2 缓存 token：{tok_path}\n"
                          f"请先运行 extract_phoenix_dino.py，或指定 --tokens_dir /tmp/dino_tokens")
-    ds = TokenExprDS(tok_path, expr_norm)
+    ds = TokenExprDS(tok_path, expr_norm, coords_all)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     model = PhoenixFlowOnly(num_genes=num_genes, flow_weights=args.flow_weights,
@@ -106,7 +114,8 @@ def main() -> None:
     print(f"[Phoenix-test] 加载 best.pt（token 式），{test_steps} 步采样，{len(ds)} 细胞，"
           f"token {ds.tokens.shape}", flush=True)
 
-    results = evaluate(model, dl, device, "log1p_zscore", stats, details=True)
+    results = evaluate(model, dl, device, "log1p_zscore", stats,
+                       topk_ks="full", details=True, ssim=True)
     json_results = {k: v for k, v in results.items() if not isinstance(v, np.ndarray)}
     os.makedirs(args.output_dir, exist_ok=True)
     with open(os.path.join(args.output_dir, "test_results.json"), "w") as f:

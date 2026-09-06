@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 mkdir -p outputs logs
 LOG=logs/seed_rerun.log
 say() { echo "[$(date -u '+%F %T')] $*" | tee -a "$LOG"; }
-SEEDS="${SEEDS:-0 1}"
+SEEDS="${SEEDS:-0 1 2}"
 
 say "==== seed 复跑开始（SEEDS=$SEEDS）===="
 
