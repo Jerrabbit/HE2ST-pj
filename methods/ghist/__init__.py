@@ -305,7 +305,7 @@ def train_function(model, train_loader, valid_loader, args, stats) -> dict:
                             device, os.path.join(args.output_dir, f"val_epoch{epoch}"),
                             ref_expr=ref_expr)
         mean_loss = total_loss / max(n_batches, 1)
-        history.append({"epoch": epoch, "train_loss": mean_loss, **ev})
+        history.append({"epoch": epoch, "train_loss": mean_loss, **scalar_results(ev)})
         print(f"[GHIST epoch {epoch}/{args.epochs}] loss={mean_loss:.4f} "
               f"val_PCC={ev['PCC']:.4f}", flush=True)
 
