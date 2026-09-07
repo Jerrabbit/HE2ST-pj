@@ -325,6 +325,46 @@ LG（l1=112）：
 forward_features（final-norm）；② **MLP**（RefMLPHead 2层+仅输入 LN）恒差于原 MLPHead
 （3层+每层 BatchNorm）约 0.01。**原 LG（0.3712）仍是最优**，冲 PCC ~0.4 需其他方向改进。
 
+## SQUALL / Phoenix 三种做法汇总 与 UNI+MLP / Local+Global 尝试梳理（2026-09-07）
+
+### 一、SQUALL / Phoenix：zero-shot、保官方维度微调、313 适配微调
+
+| 做法 | 改动 | SQUALL 指标(交集264 或 313) | Phoenix 指标(交集280 或 313) |
+|---|---|---|---|
+| **① zero-shot** | 官方权重整体冻结、不改架构/输出维度，直接推理，只评交集基因 | 264：PCC **0.0133** / AUROC 0.497 | 280：PCC **−0.0009** / AUROC 0.502 |
+| **② 保官方维度微调**（交集基因） | 架构/输出维度尽量不变，只在交集通道/位置上给监督、训官方自带可训练部分 | 输出仍 **15757**、只监督 264 通道：PCC **0.3521**（SPCC .306/cell .686/AUROC .752/SSIM .456，rep2 全量） | 输出仍 **280**、flow 微调：PCC **0.2202**（SPCC .173/cell .541/AUROC .621/SSIM .328，rep2 全量） |
+| **③ 313 适配微调** | 因官方面板覆盖不了全部 313，须改头/重接线到 313 | 冻结 token → 训练**自定义 313 头**（解码器头）：unf **0.3348**（cell .674/SSIM .449/AUROC .744）；统一 MLP 313 版 0.2812 作参考 | flow 位置 0..312 **重接线**到我们 313：**0.2055**（unf；全指标 cell/SSIM 的 ODE 评测运行中待回填） |
+
+实现要点：
+- **zero-shot**：`test_phoenix_zero_shot.py`（280，DINOv2+flow 官方 zuko odeint）、`test_squall_decoder.py`（15757→264）。两者均不迁移（PCC≈0、AUROC≈0.5）。
+- **② 保维度微调**：SQUALL=`squall_decoder_inplace_finetune.py`（encoder 冻结、训练官方 decoder_rgb+increase_dim 的 264 行；与官方通道子集逐位一致）；Phoenix=`phoenix_official280_finetune.py`（DINO 冻结、flow 训练，位置=官方 280 面板、目标按基因名匹配；已核实面板顺序=位置序）。
+- **③ 313 适配**：SQUALL 自定义 313 头（改架构是官方 15757→313 的必然，非任改）；Phoenix 313 重接线=训练 `train_phoenix_finetune.py`（flow 位置即我们 313 列序）。
+- 结论：zero-shot 不迁移；**保维度微调有效**（SQUALL 0.35、Phoenix 0.22）；313 适配在 SQUALL(自定义头 0.335) 高于保维度交集口径但两者基因集不同不能直接比；Phoenix 313 重接线(0.2055) 低于保 280(0.2202)——面板/身份保留有利。
+
+### 二、UNI+MLP 基线 & Local+Global：尝试过什么
+
+**MLP 头尝试（unf rep1→rep2，均 313 全基因；单 CLS 特征时）**
+
+| 头 | 目标空间 | PCC | 说明 |
+|---|---|---|---|
+| 原版 3 层 BN `MLPHead`(in→512→256→G) | log1p_zscore | **0.3240**（主基线） | 每层 BN+LeakyReLU0.1+Dropout0.1 |
+| `UNI2MLPImproved`（SiLU+2 残差+bias=均值） | log1p_zscore | ~0.3248 | 无增益 → MLP 结构改进无效 |
+| `RefMLPHead`(LN→512→GELU→Dropout→Softplus) | 纯 log1p | 0.3160 | 参考架构 |
+| RefMLPHead 无 Softplus | log1p_zscore | 0.3198 | |
+| `bn2`(Linear→256→BN→LeakyReLU→Dropout→Linear) | log1p_zscore | 0.3186 | 参考注释版"2 层" |
+
+**LG 变体（concat[Global,Local]=3072；同头时）**
+
+| 变体 | Local 来源/设置 | PCC | 说明 |
+|---|---|---|---|
+| **原版 LG** | forward_features 中心 k×k token（l1=112,l2=56） | **0.3712**（主） | 单 forward token 复用 |
+| LG+concat LN | concat 后 LayerNorm | val ~0.3724 | 无增益 |
+| **忠实 LG + 标准 MLP** | Local=intermediates[-1]，best l2=42 | val 0.3682 / final 0.3638 | 参考特征 |
+| **忠实 LG + RefMLP(Softplus/log1p)** | intermediates[-1]，l2=56 | 0.3572（final）；op2 best(l2=42) 0.3608 | |
+
+**特征归因（同一 3 层 MLP，同细胞/目标）**：同学 UNI(3072≈LG 忠实) **0.3684**；同学 BLIP2(768) **0.3755**；我们单 CLS 0.3240。三头（原版/ref/bn2）同特征只差 ~0.005–0.007。
+**结论**：增益几乎全来自**表示**（更强编码器 BLIP2、加 Local/3072 concat），**MLP 层数/结构影响很小**；这是主线"简单表示 > 复杂结构"的最直接证据。
+
 ## 官方权重 Zero-shot（交集基因评测，2026-09-03）
 
 对 Phoenix / SQUALL 的**官方预训练权重**直接做 zero-shot（不改架构/输出维度）：模型预测其
